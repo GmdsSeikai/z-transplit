@@ -9,7 +9,7 @@
 **English** | [中文](README.zh-CN.md)
 
 [![Release](https://img.shields.io/github/v/release/Liozhang/z-transplit?color=blue&logo=github)](https://github.com/Liozhang/z-transplit/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Liozhang/z-transplit/total?color=orange)](https://github.com/Liozhang/z-transplit/releases)
 [![Zotero 7 ~ 10](https://img.shields.io/badge/Zotero-7%20~%2010-CC6633.svg)](https://www.zotero.org/)
 
@@ -171,4 +171,6 @@ workflows live in [docs/development.md](docs/development.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Copyright (C) 2026 z-transplit contributors
+
+AGPL-3.0 — see [LICENSE](LICENSE). Same license as Zotero itself.

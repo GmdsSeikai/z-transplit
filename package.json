@@ -16,7 +16,7 @@
   },
   "author": "z-transplit contributors",
   "homepage": "https://github.com/Liozhang/z-transplit#readme",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "scripts": {
     "dev": "zotero-plugin serve",
     "build": "tsc --noEmit && zotero-plugin build",

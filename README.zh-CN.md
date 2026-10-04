@@ -9,7 +9,7 @@
 [English](README.md) | **中文**
 
 [![Release](https://img.shields.io/github/v/release/Liozhang/z-transplit?color=blue&logo=github)](https://github.com/Liozhang/z-transplit/releases)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Liozhang/z-transplit/total?color=orange)](https://github.com/Liozhang/z-transplit/releases)
 [![Zotero 7 ~ 10](https://img.shields.io/badge/Zotero-7%20~%2010-CC6633.svg)](https://www.zotero.org/)
 
@@ -128,4 +128,6 @@ AI 引擎把「发给模型什么」交给用户：翻译提示词是一个可�
 
 ## License
 
-MIT — 见 [LICENSE](LICENSE)。
+Copyright (C) 2026 z-transplit contributors
+
+AGPL-3.0 —— 见 [LICENSE](LICENSE)。与 Zotero 本体相同的协议。

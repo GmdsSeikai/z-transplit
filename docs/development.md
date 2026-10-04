@@ -135,4 +135,6 @@ node scripts/qa/screenshots.mjs --locale zh-CN --out docs/screenshots/zh-CN \
 
 ## License
 
-MIT — 见 [LICENSE](../LICENSE)。
+Copyright (C) 2026 z-transplit contributors
+
+AGPL-3.0 —— 见 [LICENSE](../LICENSE)。与 Zotero 本体相同的协议。
