@@ -128,7 +128,7 @@ export async function checkHealth(): Promise<HealthResult> {
     safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
     /* best-effort: fall through to system detection */
   }
-  const javaExe = resolveJavaExecutable();
+  let javaExe = resolveJavaExecutable();
   log(`[Z-Transplit ODL] checkHealth: javaExe="${javaExe}"`);
   if (!javaExe) {
     return {
@@ -141,10 +141,30 @@ export async function checkHealth(): Promise<HealthResult> {
   // Run `java -version` directly (NOT through the JAR) to verify Java works.
   // execJava() prepends `-jar <jarPath>` which would pass `-version` to the
   // opendataloader-pdf CLI and cause a non-zero exit.
-  const result = await runProcess(javaExe, ["-version"], 10000);
+  let result = await runProcess(javaExe, ["-version"], 10000);
   log(
     `[Z-Transplit ODL] checkHealth: java -version exitCode=${result.exitCode} timedOut=${result.timedOut}`,
   );
+  // A managed JRE that exists but won't run (e.g. a truncated extraction)
+  // must not poison every later parse: drop it — this also clears the sync
+  // cache — and retry once with whatever remains, usually system PATH Java.
+  if (result.exitCode !== 0 && javaExe === getCachedManagedJavaExe()) {
+    try {
+      const { discardManagedRuntime } = await import("./JavaRuntimeManager");
+      await discardManagedRuntime();
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+      /* best-effort */
+    }
+    const fallbackExe = resolveJavaExecutable();
+    if (fallbackExe && fallbackExe !== javaExe) {
+      javaExe = fallbackExe;
+      result = await runProcess(javaExe, ["-version"], 10000);
+      log(
+        `[Z-Transplit ODL] checkHealth: retry javaExe="${javaExe}" exitCode=${result.exitCode}`,
+      );
+    }
+  }
   if (result.exitCode !== 0) {
     return { healthy: false, error: result.stderr || "java -version failed" };
   }

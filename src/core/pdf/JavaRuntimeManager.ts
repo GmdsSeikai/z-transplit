@@ -13,11 +13,20 @@
  * Cross-platform (Win + macOS + Linux). Adoptium API (verified):
  *   GET https://api.adoptium.net/v3/binary/latest/{feature}/ga/{os}/{arch}/jre/hotspot/normal/eclipse
  *   → 307 → GitHub release asset (e.g. OpenJDK17U-jre_x64_windows_hotspot_17.0.x_x.zip)
+ *   GET https://api.adoptium.net/v3/assets/latest/{feature}/hotspot?os=&architecture=&image_type=jre&vendor=eclipse
+ *   → metadata incl. binary.package.checksum (SHA-256), the anchor for
+ *     detecting and reusing a previously completed download.
+ *
+ * The install is interruption-safe: archives are kept across failed installs
+ * and reused by SHA-256 on retry, extraction happens in a staging directory
+ * that must pass `java -version` before atomically moving into place, and a
+ * cached-but-broken runtime is detected by probe and discarded (self-heal).
  *
  * Ported from leadero's src/core/pdf/JavaRuntimeManager.ts. Changes: the managed
  * runtime directory and every temp-file prefix now carry the z-transplit
- * addon name, and log prefixes are renamed. Host-coupled by nature
- * (Zotero.HTTP / nsIProcess / taskkill) — not unit-testable in Node.
+ * addon name, and log prefixes are renamed. Host-coupled (Zotero.HTTP /
+ * nsIProcess / taskkill) — unit-tested against a faked host boundary in
+ * tests/unit/core/pdf/javaRuntimeManager.test.ts.
  *
  * @module core/pdf/JavaRuntimeManager
  */
@@ -129,9 +138,19 @@ export async function getManagedJavaExe(): Promise<string | null> {
     return managedExeCache;
   }
   managedExeCache = null;
+  const javaExe = await findJavaInDir(getJavaRuntimeDir());
+  managedExeCache = javaExe;
+  return javaExe;
+}
 
+/**
+ * Scan a directory for an extracted Temurin JRE and return the absolute path
+ * to its `java` executable. Handles both the Windows/Linux layout
+ * ({dir}/jdk-xxx/bin/java) and the macOS bundle layout
+ * ({dir}/jdk-xxx/Contents/Home/bin/java).
+ */
+async function findJavaInDir(dir: string): Promise<string | null> {
   const IOUtils = (globalThis as any).IOUtils;
-  const dir = getJavaRuntimeDir();
   if (!(await pathExists(dir))) return null;
 
   const binName = isWindows() ? "java.exe" : "java";
@@ -141,10 +160,12 @@ export async function getManagedJavaExe(): Promise<string | null> {
     for (const child of children) {
       const name = basename(child);
       if (!/^jdk-/i.test(name) && !/^jre-/i.test(name)) continue;
-      const candidate = pathJoin(child, "bin", binName);
-      if (await pathExists(candidate)) {
-        managedExeCache = candidate;
-        return candidate;
+      for (const tail of [
+        ["bin", binName],
+        ["Contents", "Home", "bin", binName],
+      ]) {
+        const candidate = pathJoin(child, ...tail);
+        if (await pathExists(candidate)) return candidate;
       }
     }
   } catch (e) {
@@ -152,6 +173,26 @@ export async function getManagedJavaExe(): Promise<string | null> {
     /* ignore — fall through */
   }
   return null;
+}
+
+/**
+ * Drop the managed JRE: clear the sync cache and delete the runtime directory
+ * (best-effort). Called when a cached managed JRE fails its `java -version`
+ * probe — e.g. a truncated extraction — so callers fall back to system Java
+ * and a later downloadJRE() starts clean instead of resurrecting the broken
+ * tree. Cache clearing matters: resolveJavaExecutable() serves the cached
+ * path synchronously and would keep handing out the dead executable.
+ */
+export async function discardManagedRuntime(): Promise<void> {
+  managedExeCache = null;
+  try {
+    await (globalThis as any).IOUtils.remove(getJavaRuntimeDir(), {
+      recursive: true,
+      ignoreAbsent: true,
+    });
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: discard failed: " + e);
+  }
 }
 
 
@@ -382,35 +423,72 @@ interface AdoptiumAsset {
   filename: string;
   /** "zip" or "tar.gz" — drives the extraction command. */
   archive: "zip" | "tar.gz";
+  /** SHA-256 of the archive, when the assets API was reachable. */
+  sha256?: string;
+}
+
+/** Adoptium os/arch/archive triple for the current machine. */
+function platformDescriptor(): {
+  os: string;
+  arch: string;
+  archive: "zip" | "tar.gz";
+} {
+  if (isWindows()) return { os: "windows", arch: "x64", archive: "zip" };
+  if (isMac()) {
+    return { os: "mac", arch: isMacArm64() ? "aarch64" : "x64", archive: "tar.gz" };
+  }
+  return { os: "linux", arch: "x64", archive: "tar.gz" };
 }
 
 /**
  * Build the Adoptium binary download URL for the current platform/arch.
- * The API responds 307 → the actual GitHub release asset.
+ * The API responds 307 → the actual GitHub release asset. No checksum is
+ * known on this path — it is the fallback when the assets API is unreachable.
  */
 function resolveAdoptiumAsset(featureVersion: number): AdoptiumAsset {
-  let os: string;
-  let arch: string;
-  let archive: "zip" | "tar.gz";
-
-  if (isWindows()) {
-    os = "windows";
-    arch = "x64";
-    archive = "zip";
-  } else if (isMac()) {
-    os = "mac";
-    arch = isMacArm64() ? "aarch64" : "x64";
-    archive = "tar.gz";
-  } else {
-    os = "linux";
-    arch = "x64";
-    archive = "tar.gz";
-  }
-
+  const { os, arch, archive } = platformDescriptor();
   const url = `https://api.adoptium.net/v3/binary/latest/${featureVersion}/ga/${os}/${arch}/jre/hotspot/normal/eclipse`;
   // Filename is best-effort (only used for logging); the server sets it.
   const filename = `temurin-${featureVersion}-jre-${os}-${arch}.${archive}`;
   return { url, filename, archive };
+}
+
+/**
+ * Ask the Adoptium assets API for the latest GA JRE. Unlike the binary
+ * endpoint this returns metadata — most importantly the archive's SHA-256,
+ * the anchor for detecting and reusing a previously completed download.
+ * Endpoint shape (verified): GET /v3/assets/latest/{feature}/hotspot
+ * ?os=&architecture=&image_type=jre&vendor=eclipse → [{binary.package:
+ * {name, link, size, checksum}}]. Returns null on any failure.
+ */
+async function queryAdoptiumLatestAsset(
+  featureVersion: number,
+): Promise<AdoptiumAsset | null> {
+  const { os, arch, archive } = platformDescriptor();
+  const url = `https://api.adoptium.net/v3/assets/latest/${featureVersion}/hotspot?os=${os}&architecture=${arch}&image_type=jre&vendor=eclipse`;
+  try {
+    const resp = await (Zotero as any).HTTP.request("GET", url, {
+      responseType: "json",
+      timeout: 30000,
+    });
+    const pkg = Array.isArray(resp?.response)
+      ? resp.response[0]?.binary?.package
+      : null;
+    if (resp.status === 200 && pkg?.link && pkg?.checksum) {
+      return {
+        url: pkg.link,
+        filename: pkg.name || `temurin-${featureVersion}-jre-${os}-${arch}.${archive}`,
+        archive,
+        sha256: String(pkg.checksum).toLowerCase(),
+      };
+    }
+    safeDebug(
+      `[Z-Transplit] JavaRuntimeManager: assets API unexpected response status=${resp.status}`,
+    );
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: assets API failed: " + e);
+  }
+  return null;
 }
 
 
@@ -477,103 +555,334 @@ async function extractArchive(
 }
 
 
+/** SHA-256 hex digest of `data`, or null when WebCrypto is unavailable. */
+async function sha256Hex(data: Uint8Array): Promise<string | null> {
+  try {
+    const subtle = (globalThis as any).crypto?.subtle;
+    if (!subtle?.digest) return null;
+    const digest = new Uint8Array(await subtle.digest("SHA-256", data));
+    let hex = "";
+    for (let i = 0; i < digest.length; i++) {
+      hex += digest[i].toString(16).padStart(2, "0");
+    }
+    return hex;
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
+    return null;
+  }
+}
+
 /**
- * Download and extract a portable Temurin JRE. Returns the absolute path to
- * the extracted `java` executable. Idempotent: if a managed JRE already
- * resolves, returns its path without re-downloading.
+ * Sibling staging dir: archives are extracted and probed here first, then
+ * atomically moved into the runtime dir — a kill mid-extract can never leave
+ * a half-written runtime that later gets cached as valid.
+ */
+function getStagingDir(): string {
+  return pathJoin(getDataDir(), "ztransplit", "java-runtime.staging");
+}
+
+/**
+ * Persistent download cache next to the runtime dir. The archive is KEPT
+ * across failed installs; a retry whose checksum still matches skips the
+ * ~45MB download entirely. Removed only on verified success or mismatch.
+ */
+function getArchivePath(archive: "zip" | "tar.gz"): string {
+  return pathJoin(getDataDir(), "ztransplit", `java-runtime.download.${archive}`);
+}
+
+interface ArchiveMeta {
+  sha256: string;
+  bytes: number;
+}
+
+function getArchiveMetaPath(): string {
+  return pathJoin(getDataDir(), "ztransplit", "java-runtime.download.json");
+}
+
+async function readArchiveMeta(): Promise<ArchiveMeta | null> {
+  try {
+    const raw = await (globalThis as any).IOUtils.readUTF8(getArchiveMetaPath());
+    const meta = JSON.parse(raw);
+    if (typeof meta?.sha256 === "string" && typeof meta?.bytes === "number") {
+      return meta;
+    }
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
+  }
+  return null;
+}
+
+async function writeArchiveMeta(meta: ArchiveMeta): Promise<void> {
+  try {
+    await (globalThis as any).IOUtils.writeUTF8(
+      getArchiveMetaPath(),
+      JSON.stringify(meta, null, 2) + "\n",
+    );
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
+  }
+}
+
+async function removeCachedArchive(): Promise<void> {
+  const IOUtils = (globalThis as any).IOUtils;
+  for (const p of [
+    getArchivePath("zip"),
+    getArchivePath("tar.gz"),
+    getArchiveMetaPath(),
+  ]) {
+    try {
+      await IOUtils.remove(p, { ignoreAbsent: true });
+    } catch (e) {
+      safeDebug("[Z-Transplit] JavaRuntimeManager: archive cleanup failed: " + e);
+    }
+  }
+}
+
+/** Concurrent downloadJRE() calls share one in-flight install. */
+let installInFlight: Promise<string> | null = null;
+
+/**
+ * Download (or reuse) and install a portable Temurin JRE. Returns the
+ * absolute path to the extracted `java` executable.
+ *
+ * Interruption-safe by design:
+ *  - The archive survives a failed install; a retry whose SHA-256 still
+ *    matches (recorded locally at download time, compared against the latest
+ *    release when the assets API is reachable) skips the download entirely.
+ *  - Extraction goes to a staging dir that must pass `java -version` before
+ *    being atomically moved into place, so a truncated runtime is never
+ *    served.
+ *  - A cached managed JRE that fails its probe is discarded and reinstalled
+ *    (self-heal).
  */
 export async function downloadJRE(
   featureVersion: number = 17,
   onProgress?: ProgressCallback,
 ): Promise<string> {
-  // Fast path: already installed.
+  if (installInFlight) return installInFlight;
+  installInFlight = installJRE(featureVersion, onProgress).finally(() => {
+    installInFlight = null;
+  });
+  return installInFlight;
+}
+
+async function installJRE(
+  featureVersion: number,
+  onProgress?: ProgressCallback,
+): Promise<string> {
+  const IOUtils = (globalThis as any).IOUtils;
+
+  // IOUtils.write does not create parent directories — make sure the plugin's
+  // data subdir exists before we cache the archive and metadata in it.
+  try {
+    await IOUtils.makeDirectory(pathJoin(getDataDir(), "ztransplit"), {
+      createAncestors: true,
+    });
+  } catch (e) {
+    safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
+  }
+
+  // Fast path with self-heal. findJavaInDir only checks file existence, so a
+  // truncated extraction would otherwise be served forever with cryptic JVM
+  // crashes — an existing managed JRE counts only when it actually runs.
   const existing = await getManagedJavaExe();
   if (existing) {
-    onProgress?.({
-      percent: 100,
-      phase: "done",
-      message: getString("java-progress-already-installed"),
+    const existingProbe = await execCommand(existing, ["-version"], {
+      timeout: 15000,
     });
-    return existing;
+    if (existingProbe.exitCode === 0) {
+      onProgress?.({
+        percent: 100,
+        phase: "done",
+        message: getString("java-progress-already-installed"),
+      });
+      return existing;
+    }
+    safeDebug(
+      `[Z-Transplit] JavaRuntimeManager: managed JRE broken (exit=${existingProbe.exitCode}), reinstalling: ${(existingProbe.stderr || "").slice(0, 200)}`,
+    );
+    onProgress?.({
+      percent: 0,
+      phase: "querying",
+      message: getString("java-progress-self-heal"),
+    });
+    await discardManagedRuntime();
   }
 
-  const IOUtils = (globalThis as any).IOUtils;
-  const asset = resolveAdoptiumAsset(featureVersion);
+  // Assets API first (provides the checksum anchor); the redirect-only
+  // binary URL is the fallback when metadata is unreachable.
+  const asset =
+    (await queryAdoptiumLatestAsset(featureVersion)) ||
+    resolveAdoptiumAsset(featureVersion);
   const runtimeDir = getJavaRuntimeDir();
+  const stagingDir = getStagingDir();
+  const archivePath = getArchivePath(asset.archive);
 
-  // Temp archive path next to the runtime dir.
-  const tmpArchive = pathJoin(getDataDir(), "ztransplit", `java-runtime.tmp.${asset.archive.split(".").pop()}`);
-
-  onProgress?.({ percent: 0, phase: "querying", message: asset.url });
-
-  // Download (XHR follows the 307 redirect to GitHub automatically).
-  onProgress?.({
-    percent: 0,
-    phase: "downloading",
-    message: getString("java-progress-download-start", {
-      version: featureVersion,
-      archive: asset.archive,
-    }),
-  });
-
-  let response: any;
-  try {
-    response = await (Zotero as any).HTTP.request("GET", asset.url, {
-      responseType: "arraybuffer",
-      timeout: 600000, // 10 min for ~40-50MB
-      requestObserver: (xhr: XMLHttpRequest) => {
-        xhr.addEventListener("progress", (e: ProgressEvent) => {
-          if (e.lengthComputable && e.total > 0) {
-            const percent = Math.round((e.loaded / e.total) * 100);
-            onProgress?.({
-              percent,
-              phase: "downloading",
-              message: getString("java-progress-downloading", { percent }),
-            });
-          }
-        });
-      },
-    } as any);
-  } catch (e: any) {
-    throw new Error(getString("java-error-download-failed", {
-      detail: e?.message || String(e),
-    }), { cause: e });
-  }
-
-  if (response.status !== 200 || !response.response) {
-    throw new Error(getString("java-error-download-http", { status: response.status }));
-  }
-
-  await IOUtils.write(tmpArchive, new Uint8Array(response.response));
-
-  onProgress?.({ percent: 100, phase: "extracting", message: getString("java-progress-extracting") });
-  try {
-    await extractArchive(tmpArchive, runtimeDir, asset.archive);
-  } finally {
+  // Reuse a previously downloaded archive when it still hashes to what was
+  // recorded after the original download AND — when known — to the latest
+  // release upstream. Covers "download OK, extract killed" retries and
+  // offline retries, while still refreshing on new upstream patch releases.
+  let archiveVerified = false;
+  const meta = await readArchiveMeta();
+  if (meta && (await pathExists(archivePath))) {
+    let fileHash: string | null = null;
     try {
-      await IOUtils.remove(tmpArchive);
+      fileHash = await sha256Hex(await IOUtils.read(archivePath));
     } catch (e) {
-      safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
-      /* best-effort */
+      safeDebug("[Z-Transplit] JavaRuntimeManager: archive read failed: " + e);
+    }
+    if (
+      fileHash &&
+      fileHash === meta.sha256 &&
+      (!asset.sha256 || asset.sha256 === fileHash)
+    ) {
+      archiveVerified = true;
+      onProgress?.({
+        percent: 100,
+        phase: "downloading",
+        message: getString("java-progress-reuse-archive"),
+      });
+    } else {
+      await removeCachedArchive();
     }
   }
 
-  // Verify and locate the java executable.
-  onProgress?.({ percent: 100, phase: "verifying", message: getString("java-progress-verifying") });
+  if (!archiveVerified) {
+    onProgress?.({
+      percent: 0,
+      phase: "downloading",
+      message: getString("java-progress-download-start", {
+        version: featureVersion,
+        archive: asset.archive,
+      }),
+    });
+
+    let response: any;
+    try {
+      response = await (Zotero as any).HTTP.request("GET", asset.url, {
+        responseType: "arraybuffer",
+        timeout: 600000, // 10 min for ~40-50MB
+        requestObserver: (xhr: XMLHttpRequest) => {
+          xhr.addEventListener("progress", (e: ProgressEvent) => {
+            if (e.lengthComputable && e.total > 0) {
+              const percent = Math.round((e.loaded / e.total) * 100);
+              onProgress?.({
+                percent,
+                phase: "downloading",
+                message: getString("java-progress-downloading", { percent }),
+              });
+            }
+          });
+        },
+      } as any);
+    } catch (e: any) {
+      throw new Error(
+        getString("java-error-download-failed", {
+          detail: e?.message || String(e),
+        }),
+        { cause: e },
+      );
+    }
+
+    if (response.status !== 200 || !response.response) {
+      throw new Error(
+        getString("java-error-download-http", { status: response.status }),
+      );
+    }
+
+    const bytes = new Uint8Array(response.response);
+    if (asset.sha256) {
+      const hash = await sha256Hex(bytes);
+      if (!hash || hash !== asset.sha256) {
+        await removeCachedArchive();
+        throw new Error(getString("java-error-checksum-mismatch"));
+      }
+      await IOUtils.write(archivePath, bytes);
+      await writeArchiveMeta({ sha256: hash, bytes: bytes.byteLength });
+      // The archive now on disk is checksum-verified — keep it across a
+      // failed extraction so the retry skips the download.
+      archiveVerified = true;
+    } else {
+      // No reference checksum (assets API unreachable): keep the old
+      // one-shot semantics — extract now, never reuse across attempts, so an
+      // undetected partial write is not re-extracted forever.
+      await IOUtils.write(archivePath, bytes);
+    }
+  }
+
+  // Staged extract → probe → atomic swap into the runtime dir.
+  onProgress?.({
+    percent: 100,
+    phase: "extracting",
+    message: getString("java-progress-extracting"),
+  });
+  try {
+    try {
+      await IOUtils.remove(stagingDir, { recursive: true, ignoreAbsent: true });
+    } catch (e) {
+      safeDebug("[Z-Transplit] JavaRuntimeManager: staging cleanup failed: " + e);
+    }
+    await extractArchive(archivePath, stagingDir, asset.archive);
+
+    const stagedJava = await findJavaInDir(stagingDir);
+    if (!stagedJava) {
+      throw new Error(getString("java-error-exe-not-found", { dir: stagingDir }));
+    }
+    const stagedProbe = await execCommand(stagedJava, ["-version"], {
+      timeout: 30000,
+    });
+    if (stagedProbe.exitCode !== 0) {
+      throw new Error(
+        getString("java-error-probe-failed", {
+          detail: stagedProbe.stderr || "java -version failed",
+        }),
+      );
+    }
+
+    // Verified — swap in. discardManagedRuntime() clears the cache and any
+    // remains of a previous runtime dir (IOUtils.move onto an existing
+    // directory fails).
+    await discardManagedRuntime();
+    await IOUtils.move(stagingDir, runtimeDir);
+  } catch (e) {
+    try {
+      await IOUtils.remove(stagingDir, { recursive: true, ignoreAbsent: true });
+    } catch (e2) {
+      safeDebug("[Z-Transplit] JavaRuntimeManager: staging cleanup failed: " + e2);
+    }
+    // Keep a checksum-verified archive for the retry; drop an unverifiable one.
+    if (!archiveVerified) await removeCachedArchive();
+    throw e;
+  }
+
+  // Final verification from the installed location.
+  onProgress?.({
+    percent: 100,
+    phase: "verifying",
+    message: getString("java-progress-verifying"),
+  });
   const javaExe = await getManagedJavaExe();
   if (!javaExe) {
     throw new Error(getString("java-error-exe-not-found", { dir: runtimeDir }));
   }
-
-  // Sanity-check it actually runs.
   const probe = await execCommand(javaExe, ["-version"], { timeout: 30000 });
   if (probe.exitCode !== 0) {
-    throw new Error(getString("java-error-probe-failed", {
-      detail: probe.stderr || "java -version failed",
-    }));
+    await discardManagedRuntime();
+    await removeCachedArchive();
+    throw new Error(
+      getString("java-error-probe-failed", {
+        detail: probe.stderr || "java -version failed",
+      }),
+    );
   }
 
-  onProgress?.({ percent: 100, phase: "done", message: getString("java-progress-done") });
+  // Success — the cached archive has served its purpose.
+  await removeCachedArchive();
+  onProgress?.({
+    percent: 100,
+    phase: "done",
+    message: getString("java-progress-done"),
+  });
   return javaExe;
 }
 
@@ -641,6 +950,10 @@ export async function getJavaStatus(): Promise<JavaStatus> {
         managed: true,
       };
     }
+    // Broken managed JRE (e.g. truncated extraction): drop it before falling
+    // back so the sync resolver in OpenDataLoaderPdfClient stops serving the
+    // dead path and a later downloadJRE() starts clean.
+    await discardManagedRuntime();
   }
   // System PATH fallback (avoids circular import of OpenDataLoaderPdfClient).
   const systemJava = findSystemJava();
@@ -665,6 +978,7 @@ export async function getJavaStatus(): Promise<JavaStatus> {
 const JavaRuntimeManager = {
   getJavaRuntimeDir,
   getManagedJavaExe,
+  discardManagedRuntime,
   downloadJRE,
   getJavaStatus,
 };

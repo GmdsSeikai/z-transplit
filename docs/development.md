@@ -14,6 +14,7 @@ src/
 │   ├── translation/                  翻译引擎适配、AI 提示词模板、内容寻址缓存
 │   ├── pdf/                           保排版全文翻译流水线
 │   │   ├── OpenDataLoaderPdfClient.ts  本地 JVM（jar）进程封装
+│   │   ├── JavaRuntimeManager.ts      托管 JRE：缺失时自动下载便携版（SHA-256 校验复用、暂存目录原子安装、损坏自愈）
 │   │   ├── translation/                版式解析 → 逐段翻译 → 重排渲染 → 译文入库
 │   │   └── splitview/                  分屏 Tab：浏览器装载、同步、清理
 │   ├── pdf/sdt/                       Zotero 10 阅读模式（SDT）双语插入视图
@@ -86,7 +87,7 @@ npm run check:jar                            # 对账（同时校验 ODL jar 与
 
 | 层 | 位置 | 说明 |
 | --- | --- | --- |
-| 单元 | `tests/unit/` | 引擎分发、缓存、面板 DOM 行为、设置 pane 显隐与校验、朗读控制 |
+| 单元 | `tests/unit/` | 引擎分发、缓存、面板 DOM 行为、设置 pane 显隐与校验、朗读控制、JRE 托管安装中断安全（假宿主驱动真实 `JavaRuntimeManager`） |
 | Node 集成 | `tests/node/` | ODL JSON 适配、版式渲染往返、分屏同步、真实 fixture |
 | 真机 | `scripts/qa/real-machine.mjs` | 在真实 Zotero（隔离 profile + 数据目录）里装载构建产物，驱动真实 DOM / 菜单 / 网络 / Java 流水线 |
 
