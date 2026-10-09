@@ -15,7 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   播放中再次点击同一按钮即停止，点击另一按钮直接切换；关闭词卡标签页会自
   动停止播放。当前环境缺少语音接口时不渲染这两个按钮。
 - 解析组件按需下载与国内镜像择优。默认构建改为精简版：XPI 不再内置 24MB 的
-  OpenDataLoader 解析组件，体积从约 27MB 缩到约 8MB；首次解析时插件按随包
+  OpenDataLoader 解析组件，体积从约 27MB 缩到约 5MB；首次解析时插件按随包
   分发的 PROVENANCE 指纹（版本与 SHA-256）自动下载该组件，并发区间探测全部
   来源后从最快者整包下载，单来源失败或校验不符自动降级到下一个。来源实测
   （2026-10，境内直连）：阿里云 PyPI 镜像、清华 PyPI 镜像、PyPI 官方源、
