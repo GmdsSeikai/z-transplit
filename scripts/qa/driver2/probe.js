@@ -40,6 +40,119 @@ PROBE_CMDS.ping = async function () {
   return { pong: true, zotero: Zotero.version, at: new Date().toISOString() };
 };
 
+// ── 解析组件（ODL jar）诊断：设置面板按钮的后端直调 ────────────────────────
+PROBE_CMDS.odlStatus = async function () {
+  const t0 = Date.now();
+  try {
+    const status = await Zotero.ZTransplit.odlJar.getStatus();
+    return { status, ms: Date.now() - t0 };
+  } catch (e) {
+    return { error: String((e && e.stack) || e), ms: Date.now() - t0 };
+  }
+};
+
+PROBE_CMDS.odlInstall = async function () {
+  const t0 = Date.now();
+  try {
+    const p = await Zotero.ZTransplit.odlJar.install();
+    const st = await IOUtils.stat(p).catch(() => null);
+    return { ok: true, path: p, size: st ? st.size : null, ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, error: String((e && e.stack) || e), ms: Date.now() - t0 };
+  }
+};
+
+/** WebCrypto 可用性与大文件哈希探测（sha256Hex 的底层）。 */
+PROBE_CMDS.odlHashProbe = async function () {
+  const out = {};
+  out.hasCrypto = typeof crypto !== "undefined";
+  out.hasSubtle = !!(out.hasCrypto && crypto.subtle && crypto.subtle.digest);
+  try {
+    const small = new TextEncoder().encode("abc");
+    const d = await crypto.subtle.digest("SHA-256", small);
+    out.smallDigest = Array.from(new Uint8Array(d))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    // 大缓冲：读随包 region remover jar（精简版安装树里就有，约 4.4MB）
+    const profD = Services.dirsvc.get("ProfD", Components.interfaces.nsIFile);
+    const cand = profD.parent;
+    // 探针不猜路径：直接扫 ProfD/extensions/<id>/core/pdf/lib/
+    const ext = profD.clone();
+    ext.append("extensions");
+    const jar = ext.clone();
+    jar.append("ztransplit@zotero.org");
+    jar.append("core");
+    jar.append("pdf");
+    jar.append("lib");
+    jar.append("ztransplit-region-text-remover.jar");
+    out.jarPath = jar.path;
+    if (jar.exists()) {
+      const bytes = await IOUtils.read(jar.path);
+      out.jarBytes = bytes.byteLength;
+      const t0 = Date.now();
+      const d2 = await crypto.subtle.digest("SHA-256", bytes);
+      out.jarDigestHead = Array.from(new Uint8Array(d2))
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("")
+        .slice(0, 16);
+      out.jarDigestMs = Date.now() - t0;
+    } else {
+      out.jarMissing = true;
+    }
+  } catch (e) {
+    out.error = String((e && e.stack) || e);
+  }
+  return out;
+};
+
+/** nsIZipReader 真实接口探查：方法面、findEntries 迭代形状、extract 落盘。 */
+PROBE_CMDS.odlZipApi = async function () {
+  const out = {};
+  try {
+    const Cc = Components.classes;
+    const Ci = Components.interfaces;
+    const reader = Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
+      Ci.nsIZipReader,
+    );
+    out.methods = [];
+    let proto = reader;
+    while (proto && proto !== Object.prototype) {
+      out.methods.push(...Object.getOwnPropertyNames(proto));
+      proto = Object.getPrototypeOf(proto);
+    }
+    out.methods = [...new Set(out.methods)].sort();
+    const zipPath = "D:\\zt-qa\\driver.zip";
+    const f = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+    f.initWithPath(zipPath);
+    reader.open(f);
+    const names = [];
+    const finder = reader.findEntries("*");
+    out.finderType = finder.constructor?.name || typeof finder;
+    out.finderMethods = Object.getOwnPropertyNames(
+      Object.getPrototypeOf(finder) || {},
+    ).sort();
+    while (finder.hasMore() && names.length < 8) {
+      const n = finder.getNext();
+      names.push({ value: n, type: typeof n });
+    }
+    out.firstEntries = names;
+    // extract 实测：把第一个条目解到数据目录
+    if (names.length && typeof names[0].value === "string" && !names[0].value.endsWith("/")) {
+      const dest = PathUtils.join(Zotero.DataDirectory.dir, "qa-zip-extract-probe");
+      const df = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+      df.initWithPath(dest);
+      reader.extract(names[0].value, df);
+      const st = await IOUtils.stat(dest);
+      out.extracted = { entry: names[0].value, dest, size: st.size };
+      await IOUtils.remove(dest, { ignoreAbsent: true });
+    }
+    reader.close();
+  } catch (e) {
+    out.error = String((e && e.stack) || e);
+  }
+  return out;
+};
+
 PROBE_CMDS.snapshot = async function () {
   const out = { zoteroVersion: Zotero.version, checks: {}, errors: [] };
   const g = (k) => Zotero.Prefs.get("extensions.zotero.ztransplit." + k, true);

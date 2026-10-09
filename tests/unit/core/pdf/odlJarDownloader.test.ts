@@ -105,6 +105,7 @@ const PROFILE = "C:\\Users\\tester\\profile";
 const EXT_DIR = PROFILE + "\\extensions";
 const XPI_PATH = EXT_DIR + "\\ztransplit@zotero.org.xpi";
 const ADDON_ID = "ztransplit@zotero.org";
+const TMP_DIR = "C:\\Temp";
 
 const INNER_JAR = new Uint8Array([0x50, 0x4b, 9, 9, 1, 2, 3, 4]);
 const OTHER_JAR = new Uint8Array([7, 7, 7, 7]);
@@ -167,6 +168,16 @@ function makeFakeNsIFile(initial = ""): any {
     isDirectory() {
       return fs.isDirectory(this.path);
     },
+    // readZipEntryText 的临时文件用法：clone → append → extract → remove。
+    clone() {
+      return makeFakeNsIFile(this.path);
+    },
+    append(name: string) {
+      this.path = this.path ? this.path + "\\" + name : name;
+    },
+    remove() {
+      fs.remove(this.path);
+    },
     QueryInterface() {
       return file;
     },
@@ -212,22 +223,22 @@ function makeZipReader(): any {
       if (!this._rec?.entries.has(e)) throw new Error("no entry: " + e);
       return { name: e };
     },
-    getInputStream(e: string) {
-      const bytes = this._rec?.entries.get(e);
-      if (!bytes) throw new Error("no entry: " + e);
-      return {
-        available: () => bytes.byteLength,
-        readBytes: (n: number) => bytes.slice(0, n),
-        close() {},
-      };
-    },
-    getEntries() {
+    // 真实宿主（Gecko 140）的 nsIZipReader 没有 getEntries()：条目枚举只有
+    // findEntries(pattern)，返回 hasMore()/getNext() 迭代器，getNext 给出
+    // 条目名字符串。
+    findEntries(_pattern: string) {
       const names = [...(this._rec?.entries.keys() ?? [])];
       let i = 0;
       return {
-        hasMoreElements: () => i < names.length,
-        getNext: () => ({ name: names[i++] }),
+        hasMore: () => i < names.length,
+        getNext: () => names[i++],
       };
+    },
+    // extract(entry, nsIFile)：把条目字节直接写到目标路径。
+    extract(e: string, f: any) {
+      const bytes = this._rec?.entries.get(e);
+      if (!bytes) throw new Error("no entry: " + e);
+      fs.write(f.path, bytes);
     },
     close() {},
   };
@@ -239,20 +250,6 @@ function buildGlobals(): void {
       "@mozilla.org/file/local;1": { createInstance: () => makeFakeNsIFile() },
       "@mozilla.org/libjar/zip-reader;1": {
         createInstance: () => makeZipReader(),
-      },
-      "@mozilla.org/binaryinputstream;1": {
-        createInstance: () => ({
-          _stream: null as any,
-          setInputStream(s: any) {
-            this._stream = s;
-          },
-          readArrayBuffer(n: number): ArrayBuffer {
-            const part = this._stream.readBytes(n) as Uint8Array;
-            const ab = new ArrayBuffer(part.byteLength);
-            new Uint8Array(ab).set(part);
-            return ab;
-          },
-        }),
       },
       "@mozilla.org/file/directory_service;1": {
         getService: () => ({
@@ -299,6 +296,7 @@ function buildGlobals(): void {
     move: async (s: string, d: string) => fs.move(s, d),
     makeDirectory: async (p: string, opts?: any) => fs.makeDirectory(p, opts),
     getChildren: async (p: string) => fs.getChildren(p),
+    setPermissions: async () => {},
   };
   (globalThis as any).PathUtils = {
     join: (...p: string[]) => path.win32.join(...p),
@@ -307,6 +305,11 @@ function buildGlobals(): void {
     isWin: true,
     DataDirectory: { dir: DATA_DIR },
     logError: (e: unknown) => loggedErrors.push(String(e)),
+    // readZipEntryText 把 zip 内小条目解到临时目录后按文本读回。
+    getTempDirectory: () => makeFakeNsIFile(TMP_DIR),
+    File: {
+      getContents: (f: any) => new TextDecoder().decode(fs.read(f.path)),
+    },
     getMainWindow: () => null,
     ProgressWindow: class {
       descriptions: string[] = [];

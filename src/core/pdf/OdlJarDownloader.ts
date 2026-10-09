@@ -179,9 +179,31 @@ function joinPath(...parts: string[]): string {
   return parts.join("/");
 }
 
+/** nsIZipReader 枚举元素 → 条目名（不同 Gecko 版本元素类型不同，防御式处理）。 */
+function zipEntryName(raw: any): string {
+  if (typeof raw === "string") return raw;
+  try {
+    const Ci = (Components as any).interfaces;
+    return (
+      ((raw?.QueryInterface?.(Ci.nsISupportsCString)?.data ?? raw?.name) as
+        | string
+        | undefined) || ""
+    );
+  } catch (e) {
+    return raw?.name ?? "";
+  }
+}
+
 /**
- * 打开落盘的压缩包，按条目名定位 jar，逐字节核对 SHA-256 后经暂存文件
- * 原子落地。任何一步失败都抛错，由调用方降级到下一个来源。
+ * 打开落盘的压缩包，按条目名定位 jar，解压到暂存文件并逐字节核对 SHA-256，
+ * 通过后原子换名落地。任何一步失败都抛错并清理暂存，由调用方降级到下一个
+ * 来源。
+ *
+ * Gecko 的 nsIZipReader 没有 getEntries()——条目枚举只有 findEntries()（返回
+ * hasMore()/getNext() 迭代器，元素为条目名字符串），解包用 extract() 直接落
+ * 盘；两者与 Zotero 自身 dictionaries.js / BackupService 的用法一致，均已真
+ * 机验证。经流读取（getInputStream + nsIBinaryInputStream）的路径在本宿主上
+ * 从未跑通，不再使用。
  */
 async function installJarFromArchive(
   archivePath: string,
@@ -201,15 +223,10 @@ async function installJarFromArchive(
   );
   zipReader.open(archiveFile);
   try {
-    const entries = zipReader.getEntries();
+    const finder = zipReader.findEntries("*");
     let entryPath: string | null = null;
-    while (entries.hasMoreElements()) {
-      const raw = entries.getNext();
-      const name =
-        typeof raw === "string"
-          ? raw
-          : ((raw?.QueryInterface?.(Ci.nsISupportsCString)?.data ??
-              raw?.name) as string) || "";
+    while (finder.hasMore()) {
+      const name = zipEntryName(finder.getNext());
       if (jarEntryMatches(name, meta)) {
         entryPath = name;
         break;
@@ -221,35 +238,31 @@ async function installJarFromArchive(
       );
     }
 
-    const stream = zipReader.getInputStream(entryPath);
-    let bytes: Uint8Array;
-    try {
-      const binary = Cc["@mozilla.org/binaryinputstream;1"].createInstance(
-        Ci.nsIBinaryInputStream,
-      );
-      binary.setInputStream(stream);
-      bytes = new Uint8Array(binary.readArrayBuffer(stream.available()));
-    } finally {
-      try {
-        stream.close();
-      } catch (e) {
-        safeDebug("[Z-Transplit ODL] " + e);
-      }
-    }
-    const hash = await sha256Hex(bytes);
-    if (hash !== meta.sha256) {
-      throw new Error(
-        `jar checksum mismatch: expected ${meta.sha256}, got ${hash}`,
-      );
-    }
-
     await IOUtils.makeDirectory(paths.dir, { createAncestors: true });
     const staging = joinPath(
       paths.dir,
       `.staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${meta.file}`,
     );
-    await IOUtils.write(staging, bytes);
     try {
+      // extract 直接落盘到暂存文件，指纹核对通过前绝不占据目标位。压缩条目
+      // 可能携带只读权限位，会让后续的覆盖与清理失败——解压后立即改回普通
+      // 权限（尽力而为）。
+      const stagingFile = Cc["@mozilla.org/file/local;1"].createInstance(
+        Ci.nsIFile,
+      );
+      stagingFile.initWithPath(staging);
+      zipReader.extract(entryPath, stagingFile);
+      try {
+        await IOUtils.setPermissions(staging, 0o644);
+      } catch (e) {
+        safeDebug("[Z-Transplit ODL] staging chmod skipped: " + e);
+      }
+      const hash = await sha256Hex(await IOUtils.read(staging));
+      if (hash !== meta.sha256) {
+        throw new Error(
+          `jar checksum mismatch: expected ${meta.sha256}, got ${hash}`,
+        );
+      }
       await IOUtils.remove(paths.target, { ignoreAbsent: true });
       await IOUtils.move(staging, paths.target);
     } catch (e) {
@@ -261,7 +274,7 @@ async function installJarFromArchive(
       throw e;
     }
     safeDebug(
-      `[Z-Transplit ODL] jar installed from ${archivePath} → ${paths.target} (${bytes.byteLength} bytes)`,
+      `[Z-Transplit ODL] jar installed from ${archivePath} → ${paths.target}`,
     );
     return paths.target;
   } finally {

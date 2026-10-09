@@ -444,20 +444,32 @@ function zipHasEntry(zipReader: any, entryPath: string): boolean {
   }
 }
 
-/** Read a zip entry fully into memory (the jar is ≤ 24 MB). */
-function readZipEntryBytes(zipReader: any, entryPath: string): Uint8Array {
+/**
+ * 读取 zip 里的小文本条目（随包 PROVENANCE*.json）。
+ *
+ * Gecko 的 nsIBinaryInputStream.readArrayBuffer 只接受「长度 + 预分配缓冲」
+ * 的双参形式（Zotero 自身 mimeTypeHandler.js 即如此调用），单参返回 ArrayBuffer
+ * 的写法从未在本宿主验证通过；小文件不值得再赌一条流式路径，统一走
+ * nsIZipReader.extract 落到临时文件后按文本读回，用完即删。
+ */
+function readZipEntryText(zipReader: any, entryPath: string): string {
   const Cc = (Components as any).classes;
   const Ci = (Components as any).interfaces;
-  const stream = zipReader.getInputStream(entryPath);
+  const tmpDir =
+    (Zotero as any).getTempDirectory?.() ||
+    Cc["@mozilla.org/file/directory_service;1"]
+      .getService(Ci.nsProperties)
+      .get("TmpD", Ci.nsIFile);
+  const tmpFile = tmpDir.clone();
+  tmpFile.append(
+    `ztransplit-zipread-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  );
+  zipReader.extract(entryPath, tmpFile);
   try {
-    const binary = Cc["@mozilla.org/binaryinputstream;1"].createInstance(
-      Ci.nsIBinaryInputStream,
-    );
-    binary.setInputStream(stream);
-    return new Uint8Array(binary.readArrayBuffer(stream.available()));
+    return (globalThis as any).Zotero?.File?.getContents?.(tmpFile) || "";
   } finally {
     try {
-      stream.close();
+      if (tmpFile.exists()) tmpFile.remove(false);
     } catch (e) {
       safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
     }
@@ -473,16 +485,14 @@ function readProvenanceSha256(
   zipReader: any,
   jarFileName: string,
 ): string | null {
-  const Ci = (Components as any).interfaces;
   try {
-    const entries = zipReader.getEntries();
-    while (entries.hasMoreElements()) {
-      const name = zipEntryName(entries.getNext());
+    // Gecko 的 nsIZipReader 没有 getEntries()，条目枚举只有 findEntries()。
+    const finder = zipReader.findEntries("*");
+    while (finder.hasMore()) {
+      const name = zipEntryName(finder.getNext());
       if (!/^core\/pdf\/lib\/PROVENANCE.*\.json$/.test(name)) continue;
       try {
-        const meta = JSON.parse(
-          new TextDecoder().decode(readZipEntryBytes(zipReader, name)),
-        );
+        const meta = JSON.parse(readZipEntryText(zipReader, name));
         if (meta?.file === jarFileName && typeof meta?.sha256 === "string") {
           return meta.sha256.toLowerCase();
         }
@@ -505,11 +515,12 @@ function readProvenanceSha256(
  * An existing extracted copy is reused only after its SHA-256 matches the
  * provenance reference (so a plugin update or a corrupted file triggers a
  * clean re-extract); with no provenance reference available the copy is
- * accepted as-is. Extracted bytes go through a staging file + rename so an
- * interrupted write can never take the target's place. Throws on checksum
- * mismatch, missing entry, or any zip/IO failure — getJarPath treats that as
- * "component unavailable" and falls through to its not-found path.
- * Exported for the unit suite (tests fake the host boundary).
+ * accepted as-is. The entry is unpacked with nsIZipReader.extract into a
+ * staging file and only takes the target's place after its bytes hash to the
+ * provenance reference, so an interrupted or tampered write can never be
+ * served. Throws on checksum mismatch, missing entry, or any zip/IO failure —
+ * getJarPath treats that as "component unavailable" and falls through to its
+ * not-found path. Exported for the unit suite (tests fake the host boundary).
  */
 export async function extractJarFromPackedXpi(
   xpiPath: string,
@@ -543,23 +554,32 @@ export async function extractJarFromPackedXpi(
       );
     }
 
-    const bytes = readZipEntryBytes(zipReader, entryPath);
-    if (expected) {
-      const hash = await sha256Hex(bytes);
-      if (hash !== expected) {
-        throw new Error(
-          `jar checksum mismatch for ${jarFileName}: expected ${expected}, got ${hash}`,
-        );
-      }
-    }
-
     await IOUtils.makeDirectory(dir, { createAncestors: true });
     const staging = joinPath(
       dir,
       `.staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${jarFileName}`,
     );
-    await IOUtils.write(staging, bytes);
     try {
+      const stagingFile = Cc["@mozilla.org/file/local;1"].createInstance(
+        Ci.nsIFile,
+      );
+      stagingFile.initWithPath(staging);
+      zipReader.extract(entryPath, stagingFile);
+      // 压缩条目可能携带只读权限位，会让后续的覆盖与清理失败——解压后立即
+      // 改回普通权限（尽力而为）。
+      try {
+        await IOUtils.setPermissions(staging, 0o644);
+      } catch (e) {
+        safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+      }
+      if (expected) {
+        const hash = await sha256Hex(await IOUtils.read(staging));
+        if (hash !== expected) {
+          throw new Error(
+            `jar checksum mismatch for ${jarFileName}: expected ${expected}, got ${hash}`,
+          );
+        }
+      }
       await IOUtils.remove(target, { ignoreAbsent: true });
       await IOUtils.move(staging, target);
     } catch (e) {
@@ -571,7 +591,7 @@ export async function extractJarFromPackedXpi(
       throw e;
     }
     log(
-      `[Z-Transplit ODL] extracted ${jarFileName} from packed XPI → ${target} (${bytes.byteLength} bytes)`,
+      `[Z-Transplit ODL] extracted ${jarFileName} from packed XPI → ${target}`,
     );
     return target;
   } finally {
@@ -647,18 +667,13 @@ async function readPinnedJarMeta(
       );
       zipReader.open(xpiFile);
       try {
-        const entries = zipReader.getEntries();
-        while (entries.hasMoreElements()) {
-          const name = zipEntryName(entries.getNext());
+        // Gecko 的 nsIZipReader 没有 getEntries()，条目枚举只有 findEntries()。
+        const finder = zipReader.findEntries("*");
+        while (finder.hasMore()) {
+          const name = zipEntryName(finder.getNext());
           if (!/^core\/pdf\/lib\/PROVENANCE.*\.json$/i.test(name)) continue;
           try {
-            raw.push(
-              JSON.parse(
-                new TextDecoder().decode(
-                  readZipEntryBytes(zipReader, name),
-                ),
-              ),
-            );
+            raw.push(JSON.parse(readZipEntryText(zipReader, name)));
           } catch (e) {
             safeDebug(
               `[Z-Transplit ODL] provenance entry ${name} unreadable: ${e}`,

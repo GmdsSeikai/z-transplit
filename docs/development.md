@@ -121,7 +121,10 @@ node scripts/qa/real-machine.mjs shoot                   # 结束
 可用 action：`ping`、`snapshot`、`introspect`、`reader`、`selectText`、`paneFlow`、
 `bilingual`、`readAloud`、`menus`、`itemtree`、`prefs`、`pipelineViaMenu`、`splitPanes`、
 `attachments`、`verifyPdf`、`installPdf`、`setPref`、`capabilities`、`locales`、
-`allPanes`、`sectionState`、`listCommands`。
+`allPanes`、`sectionState`、`listCommands`、`odlStatus`（解析组件状态检查，直调
+`Zotero.ZTransplit.odlJar.getStatus`）、`odlInstall`（解析组件下载/修复入口）、
+`odlHashProbe`（宿主 WebCrypto 大文件哈希探测）、`odlZipApi`（nsIZipReader
+真实接口面与 findEntries/extract 行为探查）。
 
 排版/引擎相关的真机发现都建议带上 `docs/screenshots/` 截图归档。
 
