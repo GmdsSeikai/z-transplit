@@ -11,11 +11,11 @@
 [![Release](https://img.shields.io/github/v/release/Liozhang/z-transplit?color=blue&logo=github)](https://github.com/Liozhang/z-transplit/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Liozhang/z-transplit/total?color=orange)](https://github.com/Liozhang/z-transplit/releases)
-[![Zotero 7 ~ 10](https://img.shields.io/badge/Zotero-7%20~%2010-CC6633.svg)](https://www.zotero.org/)
+[![Zotero 10](https://img.shields.io/badge/Zotero-10-CC6633.svg)](https://www.zotero.org/)
 
 **划词翻译 · PDF 保排版全文翻译 · 分屏对照 · 双语对照 · 仅译文 · 朗读 —— 一站式 Zotero 文献翻译插件。**
 
-Z-Transplit 是一个独立的 Zotero 7 / 10 插件，围绕「读外文文献」提供一整套翻译能力：
+Z-Transplit 是一个面向 Zotero 10 的独立插件，围绕「读外文文献」提供一整套翻译能力：
 阅读器划词即时翻译、PDF 保排版全文翻译并生成译文附件、同标签页左右分屏对照、
 Zotero 10 阅读模式的上下双语对照与仅译文模式，以及跨会话的翻译缓存和句级朗读。
 
@@ -80,8 +80,8 @@ Zotero 10 阅读模式的上下双语对照与仅译文模式，以及跨会话�
 
 ![仅译文](docs/screenshots/zh-CN/translation-only.png)
 
-> 双语对照 / 仅译文依赖 Zotero 10 的阅读模式；在 Zotero 7 上面板会明确提示降级，
-> 其余功能（划词、全文翻译、分屏、朗读）在 7 与 10 上均可用。
+> 双语对照 / 仅译文基于 Zotero 10 的阅读模式；其余功能（划词、全文翻译、分屏、
+> 朗读）在整个支持范围内均可用。
 
 ### 6. 朗读
 

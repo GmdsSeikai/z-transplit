@@ -2,12 +2,14 @@
  * capabilities — runtime feature detection for version- and host-dependent
  * capabilities.
  *
- * z-transplit now spans Zotero 7 (Gecko 115) and 10 (Gecko 140). Several
- * features degrade across that boundary, and the SDT (structured document
- * text) reading mode only exists on Zotero 10 — and even there, only when the
- * SDT pack is available for the document. Every check here is a defensive
- * `typeof` probe: no internal API is ever called blindly (see the
- * capability-disclosure pattern in src/ui/translatePane.ts#readSelection).
+ * z-transplit targets Zotero 10 (Gecko 140; the manifest declares
+ * strict_min_version 10.0). The probes below stay defensive rather than
+ * version-keyed: the SDT (structured document text) reading mode only exists
+ * on Zotero 10 — and even there, only when the SDT pack is available for the
+ * document — and the remaining capabilities are detected by feature, not by
+ * version. Every check here is a defensive `typeof` probe: no internal API is
+ * ever called blindly (see the capability-disclosure pattern in
+ * src/ui/translatePane.ts#readSelection).
  *
  * @module core/capabilities
  */

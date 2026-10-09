@@ -27,7 +27,7 @@ pane-translate-refresh = 刷新选区
 pane-translate-placeholder = 在 PDF 阅读器中选中文本后，这里会显示原文。
 pane-translate-empty-selection = 当前阅读器没有选中文本。请选中后点击「刷新选区」。
 pane-translate-no-reader = 未检测到当前阅读器：请打开一篇 PDF 后再使用本面板。
-pane-translate-selection-unsupported = 当前 Zotero 版本未开放阅读器选区接口（_selectionRanges），无法读取选中文本。请升级 Zotero 7。
+pane-translate-selection-unsupported = 当前 Zotero 版本未开放阅读器选区接口（_selectionRanges），无法读取选中文本。请升级 Zotero 10。
 
 ## 第 2 段 — 语言栏
 pane-translate-lang-auto = 自动检测

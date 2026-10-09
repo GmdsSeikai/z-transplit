@@ -11,11 +11,11 @@
 [![Release](https://img.shields.io/github/v/release/Liozhang/z-transplit?color=blue&logo=github)](https://github.com/Liozhang/z-transplit/releases)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
 [![Downloads](https://img.shields.io/github/downloads/Liozhang/z-transplit/total?color=orange)](https://github.com/Liozhang/z-transplit/releases)
-[![Zotero 7 ~ 10](https://img.shields.io/badge/Zotero-7%20~%2010-CC6633.svg)](https://www.zotero.org/)
+[![Zotero 10](https://img.shields.io/badge/Zotero-10-CC6633.svg)](https://www.zotero.org/)
 
 **Selection Translation · Layout-preserving PDF Translation · Split-screen · Bilingual Interleave · Translation-only · Read-aloud — an all-in-one Zotero translation plugin.**
 
-Z-Transplit is a standalone Zotero 7 / 10 plugin that puts the whole translation toolkit
+Z-Transplit is a standalone plugin for Zotero 10 that puts the whole translation toolkit
 for reading foreign-language literature in one place: instant translation of the reader's
 selection, layout-preserving full-text PDF translation that produces a translated
 attachment, side-by-side split reading in one tab, Zotero 10 reading-mode bilingual
@@ -104,9 +104,9 @@ leaving only the translation for smooth reading.
 
 ![Translation only](docs/screenshots/translation-only.png)
 
-> Interleaved and translation-only modes rely on Zotero 10's reading mode; on Zotero 7
-> the panel states the limitation, while every other feature (selection, full-text,
-> split, read-aloud) works on both versions.
+> Interleaved and translation-only modes are built on Zotero 10's reading mode;
+> every other feature (selection, full-text, split, read-aloud) works everywhere
+> in the supported range.
 
 ### 6. Read-aloud
 

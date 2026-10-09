@@ -28,7 +28,7 @@ pane-translate-refresh = Refresh selection
 pane-translate-placeholder = Select text in the PDF reader and it will appear here.
 pane-translate-empty-selection = The current reader has no selected text. Select some, then click "Refresh selection".
 pane-translate-no-reader = No active reader detected: open a PDF first, then use this pane.
-pane-translate-selection-unsupported = This Zotero version does not expose the reader selection API (_selectionRanges), so the selection cannot be read. Please upgrade to Zotero 7.
+pane-translate-selection-unsupported = This Zotero version does not expose the reader selection API (_selectionRanges), so the selection cannot be read. Please upgrade to Zotero 10.
 
 ## Block 2 — language bar
 pane-translate-lang-auto = Detect automatically
