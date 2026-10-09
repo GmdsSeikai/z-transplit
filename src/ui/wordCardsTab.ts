@@ -32,6 +32,11 @@ import {
 } from "../core/wordcards/wordCardStore";
 import type { WordCardRecord } from "../core/wordcards/wordCardStore";
 import type { DictionaryCardContent } from "../core/translation/types";
+import {
+  WordCardSpeaker,
+  exampleSegments,
+  type SpeechKind,
+} from "./wordCardSpeech";
 
 const CLS = "ztransplit-wc";
 
@@ -152,6 +157,10 @@ const TAB_CSS = `
   outline-offset: 1px;
 }
 .${CLS}-btn-danger { color: var(--accent-red, #db2c3a); }
+.${CLS}-btn-speaking {
+  color: var(--accent-blue, #4072e5);
+  border-color: var(--accent-blue, #4072e5);
+}
 
 /* Body: card grid + detail column */
 .${CLS}-body {
@@ -281,6 +290,11 @@ interface WordCardsTabState {
   clearTimer: ReturnType<typeof setTimeout> | null;
   copiedTimer: ReturnType<typeof setTimeout> | null;
   closing: boolean;
+  /** Read-aloud playback; null until the tab is fully built. */
+  speaker: WordCardSpeaker | null;
+  /** Detail-column speak buttons (recreated per buildDetail). */
+  speakBtn: HTMLButtonElement | null;
+  examplesBtn: HTMLButtonElement | null;
 }
 
 let activeTab: WordCardsTabState | null = null;
@@ -379,6 +393,8 @@ function destroyTab(): void {
   state.closing = true;
   if (state.clearTimer) clearTimeout(state.clearTimer);
   if (state.copiedTimer) clearTimeout(state.copiedTimer);
+  // Stop before touching the DOM: onChange must observe the closing guard.
+  state.speaker?.stop();
   try {
     state.root.remove();
     state.styleEl.remove();
@@ -473,8 +489,15 @@ function buildTab(win: any, doc: Document, host: Element): void {
     clearTimer: null,
     copiedTimer: null,
     closing: false,
+    speaker: null,
+    speakBtn: null,
+    examplesBtn: null,
   };
   activeTab = state;
+  state.speaker = new WordCardSpeaker(
+    () => win,
+    () => updateSpeakButtons(state),
+  );
 
   // ── events (nodes die with the root, so listeners need no tracking) ──
   search.addEventListener("input", () => {
@@ -666,10 +689,36 @@ function buildDetailPlaceholder(state: WordCardsTabState): HTMLElement {
   return hint;
 }
 
+/**
+ * Speak-button labels track playback: the active kind shows "stop", the
+ * other (and an idle speaker) its verb. No-op once the tab is closing or
+ * replaced — stop() fires onChange during destroyTab.
+ */
+function updateSpeakButtons(state: WordCardsTabState): void {
+  if (state.closing || activeTab !== state) return;
+  const active = state.speaker?.playingKind() ?? null;
+  const apply = (
+    btn: HTMLButtonElement | null,
+    kind: SpeechKind,
+    idleKey: string,
+  ): void => {
+    if (!btn) return;
+    const speaking = active === kind;
+    btn.textContent = getString(speaking ? "wordcards-stop" : idleKey);
+    btn.classList.toggle(`${CLS}-btn-speaking`, speaking);
+  };
+  apply(state.speakBtn, "word", "wordcards-speak");
+  apply(state.examplesBtn, "examples", "wordcards-speak-examples");
+}
+
 function buildDetail(
   state: WordCardsTabState,
   record: WordCardRecord,
 ): HTMLElement {
+  // This column was just rebuilt: stale button refs from the previous card
+  // would point at detached nodes.
+  state.speakBtn = null;
+  state.examplesBtn = null;
   const box = el(state.doc, "div", `${CLS}-d`);
   const content: DictionaryCardContent = record.latest;
 
@@ -736,6 +785,30 @@ function buildDetail(
   const meta = el(state.doc, "span", `${CLS}-d-meta`);
   meta.textContent = getString(`pane-translate-card-source-${content.source}`);
   actions.appendChild(meta);
+  // 朗读 / 朗读例句 — rendered only where the window can speak at all; the
+  // examples button additionally needs at least one example sentence.
+  if (state.speaker?.isSupported()) {
+    const speakBtn = el(state.doc, "button", `${CLS}-btn`) as HTMLButtonElement;
+    speakBtn.type = "button";
+    speakBtn.addEventListener("click", () => {
+      state.speaker?.speakWord(record.word);
+    });
+    actions.appendChild(speakBtn);
+    state.speakBtn = speakBtn;
+    if (exampleSegments(content).length > 0) {
+      const examplesBtn = el(
+        state.doc,
+        "button",
+        `${CLS}-btn`,
+      ) as HTMLButtonElement;
+      examplesBtn.type = "button";
+      examplesBtn.addEventListener("click", () => {
+        state.speaker?.speakExamples(record.word, content);
+      });
+      actions.appendChild(examplesBtn);
+      state.examplesBtn = examplesBtn;
+    }
+  }
   const copyBtn = el(state.doc, "button", `${CLS}-btn`) as HTMLButtonElement;
   copyBtn.type = "button";
   copyBtn.textContent = getString("pane-translate-copy");
@@ -764,5 +837,8 @@ function buildDetail(
   });
   actions.appendChild(deleteBtn);
   box.appendChild(actions);
+  // Sync labels with any playback that is already running (card switched
+  // mid-play); a no-op when idle.
+  updateSpeakButtons(state);
   return box;
 }
