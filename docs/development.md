@@ -48,11 +48,25 @@ addon/
 npm install
 npm run dev          # zotero-plugin serve：启动 Zotero + 热重载
 npm run build        # tsc --noEmit + zotero-plugin build → .scaffold/build/z-transplit.xpi
-npm run release      # 打 tag 并产出 xpi + update.json
 ```
 
 要求 Node.js ≥ 22.8（`zotero-plugin-scaffold@0.8` 的 engines 约束）。
 jar 更新后必须跑 `npm run check:jar`（与 `PROVENANCE.json` 的 sha256 对账）。
+
+## 发布
+
+变更日志与发布说明的约定：
+
+- CHANGELOG.md 与 GitHub Release 说明一律使用纯英文。发布说明面向全部用户，
+  界面文案已由 Fluent 语言包按 Zotero 语言切换，发布说明不再做本地化。
+- 引用代码里的原始字面量（例如正则匹配的中文错误文本）可保留原文，其余
+  行文必须是英文。
+- 发布前在 CHANGELOG.md 顶部按 `[x.y.z] - YYYY-MM-DD` 格式新增英文段落，
+  再同步 package.json 的 `version` 并打 `vX.Y.Z` 标签。
+- `zotero-plugin.config.ts` 已把 `release.changelog` 配置为
+  `node scripts/release-notes.mjs`：走 `npx zotero-plugin release`（需要
+  GITHUB_TOKEN）时，GitHub Release 说明自动取自 CHANGELOG.md 当前版本段落，
+  不会用中文提交信息生成。手工发布时同样以 CHANGELOG.md 对应段落为正文。
 
 ### 原文删除器 jar（ztransplit-region-text-remover）
 

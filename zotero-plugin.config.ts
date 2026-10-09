@@ -23,6 +23,13 @@ export default defineConfig({
   xpiDownloadLink:
     "https://github.com/{{owner}}/{{repo}}/releases/download/v{{version}}/{{xpiName}}.xpi",
 
+  release: {
+    // GitHub 发布说明从 CHANGELOG.md 当前版本段落提取（纯英文约定）。
+    // 不配置这一项时 scaffold 会用 git 提交信息生成发布说明，而本仓库的
+    // 提交信息是中文，会违反约定。
+    changelog: "node scripts/release-notes.mjs",
+  },
+
   build: {
     assets: [
       "addon/**/*.*",
