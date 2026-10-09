@@ -452,7 +452,8 @@ describe("B17 设置 pane：FTL 消息形式与 xhtml 控件匹配（prefs-F1/F2
 
   it("带静态 value 的 XUL label 两语言都写 .value（纯文本只写 textContent，替换不了 value）", () => {
     const labels = l10nBindings().filter((r) => r.tag === "label" && r.hasValue);
-    expect(labels.length).toBe(23);
+    // 24 = 23 原有 + 解析组件小节的行标签（preferences-ztransplit-pdf-odl-comp）。
+    expect(labels.length).toBe(24);
     for (const row of labels) {
       expect(enFtl.get(row.id)!.has("value"), `en-US ${row.id} 应写 .value`).toBe(true);
       expect(zhFtl.get(row.id)!.has("value"), `zh-CN ${row.id} 应写 .value`).toBe(true);
@@ -607,6 +608,138 @@ describe("B17 设置 pane：Java 运行库状态行与按钮", () => {
     expect(installBtn.hasAttribute("disabled")).toBe(false);
     const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
     expect(String(status.textContent)).toContain("未检测到");
+    h.dom.window.close();
+  });
+});
+
+// ── 解析组件：状态检测 + 下载/修复按钮 ─────────────────────────────────────
+//
+// 与 Java 小节同一套路：面板通过 Zotero.ZTransplit.odlJar（主包暴露）检测与
+// 下载修复；这里用桩验证回显与按钮态。这一节是「精简版升级后组件缺失仍提示
+// 重新安装插件」的手动出口：按钮必须存在、失败必须把细节上墙。
+
+type OdlStatusStub = {
+  present: boolean;
+  version?: string;
+  source?: "landed" | "bundled";
+  path?: string;
+  stale?: boolean;
+};
+
+interface OdlHarness extends Harness {
+  /** Click an ODL button and wait out the promise chain preferences.js runs. */
+  clickOdl(id: string): Promise<void>;
+}
+
+function setupOdlHarness(odl?: {
+  getStatus?: () => OdlStatusStub | Promise<OdlStatusStub>;
+  install?: () => Promise<string>;
+}): OdlHarness {
+  const h = setupHarness({});
+  const zt = (h.window as any).Zotero;
+  zt.ZTransplit = odl ? { odlJar: odl } : undefined;
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return {
+    ...h,
+    async clickOdl(id: string) {
+      const btn = h.doc.getElementById(id);
+      if (!btn) throw new Error(`element #${id} not found`);
+      btn.dispatchEvent(new h.window.Event("command", { bubbles: true }));
+      // 覆盖 onOdlDownload 的安装 await + 刷新 await 两层链。
+      await flush();
+      await flush();
+    },
+  };
+}
+
+describe("B17 设置 pane：解析组件状态行与按钮", () => {
+  it("主包未挂载：点击检测显示引导文案，不抛错", async () => {
+    const h = setupOdlHarness(undefined);
+    await h.clickOdl("ztransplit-pref-odl-comp-check");
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("插件主包未加载");
+    h.dom.window.close();
+  });
+
+  it("就绪 + 数据目录副本：显示版本与落地标注", async () => {
+    const h = setupOdlHarness({
+      getStatus: async () => ({
+        present: true,
+        version: "2.5.0",
+        source: "landed",
+        path: "/tmp/zotero-data/ztransplit/lib/opendataloader-pdf-cli.jar",
+      }),
+    });
+    await h.clickOdl("ztransplit-pref-odl-comp-check");
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("2.5.0");
+    expect(String(status.textContent)).toContain("数据目录");
+    h.dom.window.close();
+  });
+
+  it("就绪 + 安装包内置：标注为内置", async () => {
+    const h = setupOdlHarness({
+      getStatus: async () => ({
+        present: true,
+        version: "2.5.0",
+        source: "bundled",
+      }),
+    });
+    await h.clickOdl("ztransplit-pref-odl-comp-check");
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("安装包内置");
+    h.dom.window.close();
+  });
+
+  it("缺失：显示下载引导", async () => {
+    const h = setupOdlHarness({
+      getStatus: async () => ({ present: false, version: "2.5.0" }),
+    });
+    await h.clickOdl("ztransplit-pref-odl-comp-check");
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("未找到解析组件");
+    h.dom.window.close();
+  });
+
+  it("下载：点击后按钮禁用并切到「正在下载」，完成后恢复并刷新为就绪状态", async () => {
+    let installed = false;
+    const h = setupOdlHarness({
+      getStatus: async () =>
+        installed
+          ? {
+              present: true,
+              version: "2.5.0",
+              source: "landed",
+              path: "/tmp/jar",
+            }
+          : { present: false },
+      install: async () => {
+        installed = true;
+        return "/tmp/jar";
+      },
+    });
+    const downloadBtn = h.doc.getElementById(
+      "ztransplit-pref-odl-comp-download",
+    )!;
+    await h.clickOdl("ztransplit-pref-odl-comp-download");
+    expect(installed).toBe(true);
+    expect(downloadBtn.hasAttribute("disabled")).toBe(false);
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("2.5.0");
+    h.dom.window.close();
+  });
+
+  it("下载失败：状态行上墙错误细节，不被缺失引导覆盖", async () => {
+    const h = setupOdlHarness({
+      getStatus: async () => ({ present: false }),
+      install: async () => {
+        throw new Error("ODL jar provision failed: no mirror reachable");
+      },
+    });
+    await h.clickOdl("ztransplit-pref-odl-comp-download");
+    const status = h.doc.getElementById("ztransplit-pref-odl-comp-status")!;
+    expect(String(status.textContent)).toContain("下载失败");
+    expect(String(status.textContent)).toContain("no mirror reachable");
     h.dom.window.close();
   });
 });

@@ -285,6 +285,45 @@ preferences-ztransplit-pdf-java-status-nobundle =
     installed here. Restart Zotero; if it still does not recover, reinstall
     the plugin.
 
+## OpenDataLoader parsing component (download/repair entry of the slim build)
+preferences-ztransplit-pdf-odl-comp =
+    .value = Parsing component
+preferences-ztransplit-pdf-odl-comp-check =
+    .label = Check status
+preferences-ztransplit-pdf-odl-comp-download =
+    .label = Download / repair…
+preferences-ztransplit-pdf-odl-comp-downloading =
+    .label = Downloading…
+preferences-ztransplit-pdf-odl-comp-desc =
+    The slim build does not bundle the ~24MB parsing component: the first
+    "Translate and split" downloads it from the mirrors automatically and,
+    after byte-for-byte verification, saves it into the data directory. If
+    the component is missing or a download failed, click "Download /
+    repair…" to retry; progress is shown in the Zotero main window.
+preferences-ztransplit-pdf-odl-comp-status-checking =
+    Checking the parsing component…
+preferences-ztransplit-pdf-odl-comp-status-downloading =
+    Downloading the parsing component; progress is shown in the Zotero main
+    window. This status refreshes automatically when it finishes.
+preferences-ztransplit-pdf-odl-comp-status-ready-landed =
+    Parsing component ready: { $version } (downloaded into the data
+    directory).
+preferences-ztransplit-pdf-odl-comp-status-ready-bundled =
+    Parsing component ready: { $version } (bundled with the plugin).
+preferences-ztransplit-pdf-odl-comp-status-missing =
+    The parsing component was not found. Click "Download / repair…" to fetch
+    it from the mirrors automatically (about 24MB, saved into the data
+    directory — no plugin reinstall needed); if the download fails, check
+    the network and retry.
+preferences-ztransplit-pdf-odl-comp-status-error =
+    The check failed: { $detail }
+preferences-ztransplit-pdf-odl-comp-download-failed =
+    The download failed: { $detail }
+preferences-ztransplit-pdf-odl-comp-status-nobundle =
+    The plugin main bundle is not loaded, so the component cannot be checked
+    or downloaded here. Restart Zotero; if it still does not recover,
+    reinstall the plugin.
+
 preferences-ztransplit-pdf-fonts-title =
     .value = Font override directory
 preferences-ztransplit-pdf-fonts-desc =

@@ -2,6 +2,10 @@ import { config } from "../package.json";
 import hooks from "./hooks";
 import { getJavaStatus } from "./core/pdf/JavaRuntimeManager";
 import { installManagedJavaWithProgress } from "./core/pdf/splitview/splitViewFactory";
+import {
+  getOdlJarStatus,
+  installOdlJar,
+} from "./core/pdf/OpenDataLoaderPdfClient";
 
 /**
  * Addon singleton, published as `Zotero.ZTransplit` by src/index.ts (the name
@@ -32,6 +36,16 @@ class Addon {
     getStatus: typeof getJavaStatus;
     install: typeof installManagedJavaWithProgress;
   };
+  /**
+   * OpenDataLoader 解析组件（jar）的编程入口，供设置面板脚本
+   * （addon/content/preferences.js）使用，与 java 同一约定：getStatus 只读
+   * 检查组件是否可用（哈希核对，秒级以内）；install 触发解压/下载修复
+   * （进度窗口显示在主窗口，内部有 in-flight 去重）。
+   */
+  public odlJar: {
+    getStatus: typeof getOdlJarStatus;
+    install: typeof installOdlJar;
+  };
 
   constructor() {
     this.data = {
@@ -45,6 +59,10 @@ class Addon {
     this.java = {
       getStatus: getJavaStatus,
       install: installManagedJavaWithProgress,
+    };
+    this.odlJar = {
+      getStatus: getOdlJarStatus,
+      install: installOdlJar,
     };
   }
 }

@@ -13,6 +13,8 @@
  *   6. 旧构建无来源文件：跳过校验直接落地。
  *   7. zip 内没有该 jar：报「条目不存在」。
  *   8. getJarPath 端到端：解包目录优先；只有 .xpi 时走解压并进入会话备忘。
+ *   9. getOdlJarStatus / installOdlJar：设置面板「解析组件」小节的只读状态
+ *      检查与下载/修复入口（落地副本、内置、精简版缺失、离线失败）。
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { createHash } from "node:crypto";
@@ -21,6 +23,8 @@ import {
   extractJarFromPackedXpi,
   fileUrlFromJarUri,
   getJarPath,
+  getOdlJarStatus,
+  installOdlJar,
 } from "../../../../src/core/pdf/OpenDataLoaderPdfClient";
 
 // ─── 内存文件系统（IOUtils 语义子集，Windows 分隔符）──────────────
@@ -149,6 +153,26 @@ function addProvenanceEntry(
   zipRecordFor(xpiPath).entries.set(
     provEntryOf(suffix),
     utf8(JSON.stringify({ file: jarName, sha256: shaHex })),
+  );
+}
+
+/** 带版本/坐标的完整 PROVENANCE（下载兜底与状态检查需要 version 字段）。 */
+function addProvenanceMeta(
+  xpiPath: string,
+  jarName: string,
+  shaHex: string,
+  suffix = "",
+): void {
+  zipRecordFor(xpiPath).entries.set(
+    provEntryOf(suffix),
+    utf8(
+      JSON.stringify({
+        file: jarName,
+        sha256: shaHex,
+        version: "2.5.0",
+        artifact: "org.opendataloader:opendataloader-pdf-cli:2.5.0",
+      }),
+    ),
   );
 }
 
@@ -500,6 +524,140 @@ describe("getJarPath（打包安装）", () => {
     // baseDir 为空 → 原兜底相对路径；解压失败细节已上报
     expect(out).toBe(".\\core\\pdf\\lib\\" + jarName);
     expect(loggedErrors.join("\n")).toMatch(/checksum mismatch/);
+    expect(
+      fs.exists(path.win32.join(DATA_DIR, "ztransplit", "lib", jarName)),
+    ).toBe(false);
+  });
+});
+
+// ─── getOdlJarStatus / installOdlJar（设置面板的组件检查与修复入口）───
+
+describe("getOdlJarStatus / installOdlJar（解析组件修复入口）", () => {
+  it("落地副本指纹相符：present + landed + 版本号", async () => {
+    const jarName = "status-landed.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+    const target = path.win32.join(DATA_DIR, "ztransplit", "lib", jarName);
+    fs.write(target, JAR_BYTES);
+
+    const status = await getOdlJarStatus(jarName);
+
+    expect(status.present).toBe(true);
+    expect(status.stale).toBe(false);
+    expect(status.source).toBe("landed");
+    expect(status.version).toBe("2.5.0");
+    expect(status.path).toBe(target);
+  });
+
+  it("落地副本指纹不符：present false + stale（解析时会自动重新获取）", async () => {
+    const jarName = "status-stale.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+    fs.write(
+      path.win32.join(DATA_DIR, "ztransplit", "lib", jarName),
+      OTHER_BYTES,
+    );
+
+    const status = await getOdlJarStatus(jarName);
+
+    expect(status.present).toBe(false);
+    expect(status.stale).toBe(true);
+  });
+
+  it("精简版打包安装且无落地副本：present false，版本号仍可读出", async () => {
+    const jarName = "status-missing.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+
+    const status = await getOdlJarStatus(jarName);
+
+    expect(status.present).toBe(false);
+    expect(status.version).toBe("2.5.0");
+  });
+
+  it("完整版打包安装（XPI 内置 jar）：present + bundled", async () => {
+    const jarName = "status-bundled.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addJarEntry(XPI_PATH, jarName);
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+
+    const status = await getOdlJarStatus(jarName);
+
+    expect(status.present).toBe(true);
+    expect(status.source).toBe("bundled");
+    expect(status.version).toBe("2.5.0");
+  });
+
+  it("allowDownload:false 的状态路径不发起任何网络请求", async () => {
+    const jarName = "status-nodownload.jar";
+    let httpCalls = 0;
+    (globalThis as any).Zotero.HTTP = {
+      request: async () => {
+        httpCalls++;
+        throw new Error("offline");
+      },
+    };
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+
+    const out = await getJarPath(jarName, { allowDownload: false });
+
+    expect(out).toBe(".\\core\\pdf\\lib\\" + jarName);
+    expect(httpCalls).toBe(0);
+    expect(
+      fs.exists(path.win32.join(DATA_DIR, "ztransplit", "lib", jarName)),
+    ).toBe(false);
+  });
+
+  it("落地副本完好时修复入口直接返回，不读 jar 条目、不弹下载", async () => {
+    const jarName = "repair-healthy.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+    const target = path.win32.join(DATA_DIR, "ztransplit", "lib", jarName);
+    fs.write(target, JAR_BYTES);
+    zipRecordFor(XPI_PATH); // opens = 0
+
+    const out = await installOdlJar(jarName);
+
+    expect(out).toBe(target);
+    const rec = zipRegistry.get(XPI_PATH)!;
+    // 打开 zip 只允许是为了读 PROVENANCE 指纹（核对落地副本），jar 条目本身
+    // 不得重读（无解压），数据目录也不得出现暂存文件。
+    expect(rec.jarReads).toBe(0);
+    for (const child of fs.children(path.win32.join(DATA_DIR, "ztransplit", "lib"))) {
+      expect(child).not.toContain(".staging-");
+    }
+  });
+
+  it("落地副本损坏且 XPI 内置：修复即重解压自愈", async () => {
+    const jarName = "repair-corrupt.jar";
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addJarEntry(XPI_PATH, jarName);
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+    const target = path.win32.join(DATA_DIR, "ztransplit", "lib", jarName);
+    fs.write(target, OTHER_BYTES);
+
+    const out = await installOdlJar(jarName);
+
+    expect([...fs.read(out)]).toEqual([...JAR_BYTES]);
+  });
+
+  it("精简版且镜像全部不可达：修复入口抛错并携带下载失败细节", async () => {
+    const jarName = "repair-offline.jar";
+    let httpCalls = 0;
+    (globalThis as any).Zotero.HTTP = {
+      request: async () => {
+        httpCalls++;
+        throw new Error("offline");
+      },
+    };
+    extEntries.push(makeExtEntry(ADDON_ID + ".xpi", "file"));
+    addProvenanceMeta(XPI_PATH, jarName, sha256(JAR_BYTES));
+
+    await expect(installOdlJar(jarName)).rejects.toThrow(
+      /ODL jar provision failed/,
+    );
+    expect(httpCalls).toBeGreaterThan(0); // 修复确实发起过下载尝试
     expect(
       fs.exists(path.win32.join(DATA_DIR, "ztransplit", "lib", jarName)),
     ).toBe(false);

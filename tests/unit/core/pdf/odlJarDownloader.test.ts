@@ -454,7 +454,7 @@ describe("downloadPinnedJar", () => {
   }
 
   it("并发探测后从最快镜像下载并落地", async () => {
-    installMirrorRoutes({ aliyun: 5, tuna: 40, pypi: 20 });
+    installMirrorRoutes({ aliyun: 5, tuna: 300, pypi: 150 });
     defaultZipRecords = [
       {
         entries: new Map([["opendataloader_pdf/jar/opendataloader-pdf-cli.jar", INNER_JAR]]),
@@ -475,7 +475,7 @@ describe("downloadPinnedJar", () => {
   });
 
   it("最快来源校验和不符时自动降级到下一个", async () => {
-    installMirrorRoutes({ aliyun: 5, tuna: 40, pypi: 20 });
+    installMirrorRoutes({ aliyun: 5, tuna: 300, pypi: 150 });
     // 第一个被打开的暂存压缩包里装着坏 jar，第二个装好 jar
     const badRecord: ZipRecord = {
       entries: new Map([["opendataloader_pdf/jar/opendataloader-pdf-cli.jar", OTHER_JAR]]),
@@ -518,7 +518,7 @@ describe("downloadPinnedJar", () => {
   });
 
   it("压缩包里没有匹配条目时该来源判负并降级", async () => {
-    installMirrorRoutes({ aliyun: 5, tuna: 40, pypi: 20 });
+    installMirrorRoutes({ aliyun: 5, tuna: 300, pypi: 150 });
     const emptyRecord: ZipRecord = { entries: new Map(), opens: 0 };
     const goodRecord: ZipRecord = {
       entries: new Map([["opendataloader_pdf/jar/opendataloader-pdf-cli.jar", INNER_JAR]]),

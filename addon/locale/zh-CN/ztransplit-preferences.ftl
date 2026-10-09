@@ -246,6 +246,34 @@ preferences-ztransplit-pdf-java-status-error =
 preferences-ztransplit-pdf-java-status-nobundle =
     插件主包未加载，无法检测或安装。请重启 Zotero；仍未恢复时请重新安装本插件。
 
+## OpenDataLoader 解析组件（精简版安装包的下载/修复入口）
+preferences-ztransplit-pdf-odl-comp =
+    .value = 解析组件
+preferences-ztransplit-pdf-odl-comp-check =
+    .label = 检查状态
+preferences-ztransplit-pdf-odl-comp-download =
+    .label = 下载 / 修复…
+preferences-ztransplit-pdf-odl-comp-downloading =
+    .label = 正在下载…
+preferences-ztransplit-pdf-odl-comp-desc =
+    精简版安装包不内置约 24MB 的解析组件：首次「翻译并分屏」时自动从镜像下载，逐字节校验后保存到数据目录。组件缺失或下载失败时，点「下载 / 修复…」手动重试；下载进度显示在 Zotero 主窗口。
+preferences-ztransplit-pdf-odl-comp-status-checking =
+    正在检查解析组件…
+preferences-ztransplit-pdf-odl-comp-status-downloading =
+    正在下载解析组件，进度显示在 Zotero 主窗口。完成后此处会自动刷新状态。
+preferences-ztransplit-pdf-odl-comp-status-ready-landed =
+    解析组件就绪：{ $version }（已下载到数据目录）。
+preferences-ztransplit-pdf-odl-comp-status-ready-bundled =
+    解析组件就绪：{ $version }（安装包内置）。
+preferences-ztransplit-pdf-odl-comp-status-missing =
+    未找到解析组件。点「下载 / 修复…」自动从镜像下载（约 24MB，保存到数据目录，无需重新安装插件）；下载失败时请检查网络后重试。
+preferences-ztransplit-pdf-odl-comp-status-error =
+    检查失败：{ $detail }
+preferences-ztransplit-pdf-odl-comp-download-failed =
+    下载失败：{ $detail }
+preferences-ztransplit-pdf-odl-comp-status-nobundle =
+    插件主包未加载，无法检查或下载解析组件。请重启 Zotero；仍未恢复时请重新安装本插件。
+
 preferences-ztransplit-pdf-fonts-title =
     .value = 字体覆盖目录
 preferences-ztransplit-pdf-fonts-desc =

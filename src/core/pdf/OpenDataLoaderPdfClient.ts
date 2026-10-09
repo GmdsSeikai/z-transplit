@@ -733,24 +733,19 @@ function makeJarDownloadProgress(): ((p: DownloadProgress) => void) | undefined 
   }
 }
 
-export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Promise<string> {
-  // Session memo: once a packed-XPI install has a verified extracted copy,
-  // every later call short-circuits here (no probing, no re-hashing).
-  const IOUtils = (globalThis as any).IOUtils;
-  const memoed = extractedJarMemo.get(jarFileName);
-  if (memoed) {
-    try {
-      if (await IOUtils.exists(memoed)) return memoed;
-    } catch (e) {
-      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
-    }
-    extractedJarMemo.delete(jarFileName);
-  }
-
+/**
+ * 解析插件安装根：baseDir（解包安装的目录，打包安装时为空串）与
+ * packedXpiSource（打包安装时 .xpi 的磁盘路径，否则为 null）。getJarPath 与
+ * getOdlJarStatus 共用这份定位逻辑——状态检查不触发下载，但必须与真实解析
+ * 走同一套定位，否则面板显示与实际行为会分叉。
+ */
+async function resolveLibSources(): Promise<{
+  baseDir: string;
+  packedXpiSource: string | null;
+}> {
   // Resolve relative to this file: src/core/pdf/lib/opendataloader-pdf-cli.jar
   // Note: zotero-plugin-scaffold strips the leading `src/` from build output,
   // so in the deployed extension the JAR lives at `core/pdf/lib/...`.
-  const { join } = (globalThis as any).PathUtils || {};
   const Cc = (Components as any).classes;
   const Ci = (Components as any).interfaces;
   const addonID =
@@ -908,6 +903,28 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
   }
 
   const baseDir = rawDir ? String(rawDir.path ?? rawDir) : "";
+  return { baseDir, packedXpiSource };
+}
+
+export async function getJarPath(
+  jarFileName = "opendataloader-pdf-cli.jar",
+  opts: { allowDownload?: boolean } = {},
+): Promise<string> {
+  // Session memo: once a packed-XPI install has a verified extracted copy,
+  // every later call short-circuits here (no probing, no re-hashing).
+  const IOUtils = (globalThis as any).IOUtils;
+  const memoed = extractedJarMemo.get(jarFileName);
+  if (memoed) {
+    try {
+      if (await IOUtils.exists(memoed)) return memoed;
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+    extractedJarMemo.delete(jarFileName);
+  }
+
+  const { join } = (globalThis as any).PathUtils || {};
+  const { baseDir, packedXpiSource } = await resolveLibSources();
 
   log(
     `[Z-Transplit ODL] getJarPath: baseDir="${baseDir}" PathUtils.join=${!!join}`,
@@ -997,7 +1014,11 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
   // 精简版安装包不内置 24MB 的解析组件：按随包分发的 PROVENANCE 指纹从镜像
   // 取件（探测择优 → 整包下载 → 解包核对 SHA-256 → 原子落地）。会话内失败
   // 一次即止，避免离线时每次解析都重跑整条探测链路。
-  if ((packedXpiSource || baseDir) && !jarDownloadFailed.has(jarFileName)) {
+  if (
+    opts.allowDownload !== false &&
+    (packedXpiSource || baseDir) &&
+    !jarDownloadFailed.has(jarFileName)
+  ) {
     const meta = await readPinnedJarMeta(jarFileName, {
       baseDir: baseDir || undefined,
       packedXpiPath: packedXpiSource,
@@ -1037,6 +1058,145 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
   );
   log(`[Z-Transplit ODL] getJarPath fallback: ${fallback}`);
   return fallback;
+}
+
+/** 设置面板「解析组件」小节的状态读数（Zotero.ZTransplit.odlJar.getStatus）。 */
+export interface OdlJarStatus {
+  /** 组件当前可用（落地副本指纹相符，或随包内置/解包安装树里存在）。 */
+  present: boolean;
+  /** PROVENANCE 声明的组件版本；来源文件缺失或不可读时为 undefined。 */
+  version?: string;
+  /** present 时的位置类别：landed=数据目录副本，bundled=随包内置或安装树。 */
+  source?: "landed" | "bundled";
+  /** 组件的磁盘路径（bundled 且未解压时没有）。 */
+  path?: string;
+  /** 数据目录副本存在但指纹与 PROVENANCE 不符——解析时会自动重新获取。 */
+  stale?: boolean;
+}
+
+/** 打包安装的 XPI 里是否内置了某个 jar（完整版构建为真，精简版为假）。 */
+function packedXpiBundlesJar(xpiPath: string, jarFileName: string): boolean {
+  const Cc = (Components as any).classes;
+  const Ci = (Components as any).interfaces;
+  const xpiFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+  xpiFile.initWithPath(xpiPath);
+  const zipReader = Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
+    Ci.nsIZipReader,
+  );
+  zipReader.open(xpiFile);
+  try {
+    return zipHasEntry(zipReader, `core/pdf/lib/${jarFileName}`);
+  } finally {
+    try {
+      zipReader.close();
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+}
+
+/**
+ * 解析组件状态检查（只读，不触发下载/解压）：设置面板的「检查状态」按钮
+ * 调用。定位逻辑与 getJarPath 相同（resolveLibSources），按“数据目录落地
+ * 副本 → 打包 XPI 内置 → 解包安装树”的顺序判断组件是否可用。
+ */
+export async function getOdlJarStatus(
+  jarFileName = "opendataloader-pdf-cli.jar",
+): Promise<OdlJarStatus> {
+  const IOUtils = (globalThis as any).IOUtils;
+  const { baseDir, packedXpiSource } = await resolveLibSources();
+  const meta = await readPinnedJarMeta(jarFileName, {
+    baseDir: baseDir || undefined,
+    packedXpiPath: packedXpiSource,
+  });
+  const version = meta?.version;
+
+  // 1) 数据目录落地副本（精简版下载的，或打包安装解压出来的）。
+  try {
+    const { target } = extractedJarPaths(jarFileName);
+    if (await IOUtils.exists(target)) {
+      // 指纹不符视为不可用：getJarPath 在真实解析时会自动重新获取，
+      // 「下载 / 修复」按钮则立即修复。
+      let stale = false;
+      if (meta) {
+        stale = (await sha256Hex(await IOUtils.read(target))) !== meta.sha256;
+      }
+      return {
+        present: !stale,
+        stale,
+        version,
+        source: "landed",
+        path: target,
+      };
+    }
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+  }
+
+  // 2) 打包安装：jar 内置在 XPI 里（完整版构建）。
+  if (packedXpiSource) {
+    try {
+      if (packedXpiBundlesJar(packedXpiSource, jarFileName)) {
+        return { present: true, version, source: "bundled" };
+      }
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+
+  // 3) 解包安装（开发目录）：jar 就在安装树里。
+  if (baseDir) {
+    try {
+      const candidate = joinPath(baseDir, "core", "pdf", "lib", jarFileName);
+      if (await IOUtils.exists(candidate)) {
+        return { present: true, version, source: "bundled", path: candidate };
+      }
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+
+  return { present: false, version };
+}
+
+/**
+ * 「下载 / 修复」入口（Zotero.ZTransplit.odlJar.install）：清掉会话失败
+ * 登记与已验证副本备忘后重走 getJarPath——落地副本完好且指纹相符时直接
+ * 返回，缺失或损坏时触发解压/下载（进度窗口挂在主窗口）。取不到组件时
+ * 抛错，错误消息带上最后一次下载失败的细节供界面归因。
+ */
+export async function installOdlJar(
+  jarFileName = "opendataloader-pdf-cli.jar",
+): Promise<string> {
+  const IOUtils = (globalThis as any).IOUtils;
+  // 完好的落地副本直接返回：修复按钮不该为一次例行核对弹出进度窗口。
+  try {
+    const status = await getOdlJarStatus(jarFileName);
+    if (status.present && status.source === "landed" && status.path) {
+      extractedJarMemo.set(jarFileName, status.path);
+      return status.path;
+    }
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+  }
+  jarDownloadFailed.delete(jarFileName);
+  extractedJarMemo.delete(jarFileName);
+  lastJarProvisionFailure = null;
+  const path = await getJarPath(jarFileName);
+  let ok = false;
+  try {
+    ok = await IOUtils.exists(path);
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+  }
+  if (!ok) {
+    throw new Error(
+      `ODL jar provision failed${
+        lastJarProvisionFailure ? `: ${lastJarProvisionFailure}` : ""
+      }`,
+    );
+  }
+  return path;
 }
 
 /**

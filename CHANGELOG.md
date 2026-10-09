@@ -3,6 +3,35 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- Manual repair entry for the OpenDataLoader parsing component. The
+  preferences pane's "OpenDataLoader parsing options" section gains a
+  component row with "Check status" and "Download / repair…" buttons (plus a
+  status line), mirroring the Java runtime section. The status check is
+  read-only: it resolves the install root exactly like a real parse and
+  reports the component as landed in the data directory or bundled with the
+  plugin, with the version from the shipped PROVENANCE file. "Download /
+  repair…" clears the session's download-failure latch and re-runs jar
+  provisioning — a healthy landed copy returns immediately, a missing or
+  hash-mismatched copy is re-extracted from a full build or re-downloaded
+  from the mirrors with the progress window on the Zotero main window; on
+  failure the status line shows the download error detail instead of the
+  generic missing-component advice. This is the manual retry path for slim
+  builds whose first-parse download failed (weak network, mirror outage) and
+  never retries on its own within a session. The pane surfaces it through
+  `Zotero.ZTransplit.odlJar` (`getStatus` / `install`), next to the existing
+  `java` API.
+
+### Fixed
+
+- Flaky mirror-ranking unit test: the fake mirrors' probe delays (5ms vs
+  20ms) could reorder under full-suite load because of timer granularity on
+  Windows; the gaps are widened to 150/300ms so the intended fastest mirror
+  always wins.
+
 ## [1.6.0] - 2026-10-09
 
 ### Added

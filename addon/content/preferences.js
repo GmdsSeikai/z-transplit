@@ -776,6 +776,184 @@
       : "";
   }
 
+  // ── 解析组件：状态检测 + 下载/修复 ─────────────────────────────────────
+  // 与 Java 运行库小节同一套路：检测与下载走主包暴露的 Zotero.ZTransplit.odlJar
+  // （面板沙箱无法 import 主包模块）。检测只读磁盘（对约 24MB 组件做一次哈希
+  // 核对，亚秒级），同样只在点击按钮时执行。下载失败后主包在会话内不再自动
+  // 重试，这个按钮是唯一的手动重试入口，因此失败时把错误细节直接上墙。
+
+  var odlStrings = {};
+  /** 「下载 / 修复」按钮的原始 label，下载中态结束后恢复。 */
+  var odlDownloadLabelBase = "";
+  var odlCheckInFlight = false;
+  var odlDownloadInFlight = false;
+
+  function odlApi() {
+    try {
+      var zt = Zotero && Zotero.ZTransplit;
+      var api = zt && zt.odlJar;
+      if (
+        api &&
+        (typeof api.getStatus === "function" ||
+          typeof api.install === "function")
+      ) {
+        return api;
+      }
+    } catch (e) {
+      /* 主包未挂载 */
+    }
+    return null;
+  }
+
+  function setOdlStatusText(text) {
+    if (els.odlStatus) els.odlStatus.textContent = text;
+  }
+
+  function setOdlButtonsDisabled(disabled) {
+    [els.odlCheckBtn, els.odlDownloadBtn].forEach(function (btn) {
+      if (!btn) return;
+      try {
+        if (disabled) btn.setAttribute("disabled", "true");
+        else btn.removeAttribute("disabled");
+      } catch (e) {
+        /* 忽略 */
+      }
+    });
+  }
+
+  function setOdlDownloadLabel(downloading) {
+    if (!els.odlDownloadBtn) return;
+    var label = downloading ? odlStrings.btnDownloading : odlDownloadLabelBase;
+    if (label) {
+      try {
+        els.odlDownloadBtn.setAttribute("label", label);
+      } catch (e) {
+        /* 忽略 */
+      }
+    }
+  }
+
+  /** 读取 getStatus() 的结果并回显到状态行。 */
+  function refreshOdlStatus() {
+    var api = odlApi();
+    if (!api || typeof api.getStatus !== "function") {
+      setOdlStatusText(odlStrings.nobundle);
+      return Promise.resolve();
+    }
+    setOdlStatusText(odlStrings.checking);
+    return Promise.resolve()
+      .then(function () {
+        return api.getStatus();
+      })
+      .then(function (status) {
+        if (status && status.present) {
+          var template =
+            status.source === "landed"
+              ? odlStrings.readyLanded
+              : odlStrings.readyBundled;
+          setOdlStatusText(
+            fillJavaTemplate(template, {
+              version: (status && status.version) || "?",
+            }),
+          );
+        } else {
+          // 「缺失」与「副本存在但指纹不符」都引导到下载/修复：后者在下次
+          // 解析时也会自动重新获取，按钮只是把修复提前。
+          setOdlStatusText(odlStrings.missing);
+        }
+      })
+      .catch(function (e) {
+        setOdlStatusText(
+          fillJavaTemplate(odlStrings.statusError, {
+            detail: String((e && e.message) || e),
+          }),
+        );
+      });
+  }
+
+  function onOdlCheck() {
+    if (odlCheckInFlight) return;
+    odlCheckInFlight = true;
+    var done = function () {
+      odlCheckInFlight = false;
+    };
+    refreshOdlStatus().then(done, done);
+  }
+
+  function onOdlDownload() {
+    if (odlDownloadInFlight) return;
+    var api = odlApi();
+    if (!api || typeof api.install !== "function") {
+      setOdlStatusText(odlStrings.nobundle);
+      return;
+    }
+    odlDownloadInFlight = true;
+    setOdlButtonsDisabled(true);
+    setOdlDownloadLabel(true);
+    setOdlStatusText(odlStrings.statusDownloading);
+    // 下载在主包内执行（ProgressWindow 显示在主窗口）；无论成败这里都恢复
+    // 按钮。失败时状态行显示错误细节（多为网络原因），不再用缺失引导覆盖。
+    Promise.resolve()
+      .then(function () {
+        return api.install();
+      })
+      .catch(function (e) {
+        try {
+          Zotero.debug(
+            "[Z-Transplit] preferences: component download failed: " + e,
+          );
+        } catch (e2) {
+          /* 忽略 */
+        }
+        setOdlStatusText(
+          fillJavaTemplate(odlStrings.downloadFailed, {
+            detail: String((e && e.message) || e),
+          }),
+        );
+        return null;
+      })
+      .then(function (failed) {
+        odlDownloadInFlight = false;
+        setOdlButtonsDisabled(false);
+        setOdlDownloadLabel(false);
+        if (failed === null) return undefined;
+        return refreshOdlStatus();
+      });
+  }
+
+  function cacheOdlStrings() {
+    odlStrings.btnDownloading = javaString(
+      "ztransplit-pref-string-odl-comp-btn-downloading",
+    );
+    odlStrings.checking = javaString(
+      "ztransplit-pref-string-odl-comp-status-checking",
+    );
+    odlStrings.statusDownloading = javaString(
+      "ztransplit-pref-string-odl-comp-status-downloading",
+    );
+    odlStrings.readyLanded = javaString(
+      "ztransplit-pref-string-odl-comp-status-ready-landed",
+    );
+    odlStrings.readyBundled = javaString(
+      "ztransplit-pref-string-odl-comp-status-ready-bundled",
+    );
+    odlStrings.missing = javaString(
+      "ztransplit-pref-string-odl-comp-status-missing",
+    );
+    odlStrings.statusError = javaString(
+      "ztransplit-pref-string-odl-comp-status-error",
+    );
+    odlStrings.downloadFailed = javaString(
+      "ztransplit-pref-string-odl-comp-download-failed",
+    );
+    odlStrings.nobundle = javaString(
+      "ztransplit-pref-string-odl-comp-status-nobundle",
+    );
+    odlDownloadLabelBase = els.odlDownloadBtn
+      ? els.odlDownloadBtn.getAttribute("label") || ""
+      : "";
+  }
+
   // ── 入口 ────────────────────────────────────────────────────────────────
 
   function cacheElements() {
@@ -794,6 +972,9 @@
     els.javaCheckBtn = $("ztransplit-pref-pdf-java-check");
     els.javaInstallBtn = $("ztransplit-pref-pdf-java-install");
     els.javaStatus = $("ztransplit-pref-pdf-java-status");
+    els.odlCheckBtn = $("ztransplit-pref-odl-comp-check");
+    els.odlDownloadBtn = $("ztransplit-pref-odl-comp-download");
+    els.odlStatus = $("ztransplit-pref-odl-comp-status");
 
     // Zotero 在派发 load 之前已经跑完 document.l10n.translateFragment()，
     // 所以这里读到的 label / textContent 已经是本地化后的文案。
@@ -851,6 +1032,12 @@
     if (els.javaInstallBtn) {
       els.javaInstallBtn.addEventListener("command", onJavaInstall);
     }
+    if (els.odlCheckBtn) {
+      els.odlCheckBtn.addEventListener("command", onOdlCheck);
+    }
+    if (els.odlDownloadBtn) {
+      els.odlDownloadBtn.addEventListener("command", onOdlDownload);
+    }
     // 面板每次显示时重新探测：用户可能开着设置窗口去装了 zotero-pdf-translate。
     var root = $("zotero-prefpane-ztransplit");
     if (root) root.addEventListener("showing", syncPDFTranslateStatus);
@@ -890,6 +1077,7 @@
       syncPDFTranslateStatus();
 
       cacheJavaStrings();
+      cacheOdlStrings();
 
       var path = $("ztransplit-pref-pdf-fonts-path");
       if (path) path.textContent = assetsDir();
