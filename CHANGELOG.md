@@ -3,6 +3,21 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.1] - 2026-10-09
+
+### Changed
+
+- The plugin now declares Zotero 10 as its support window. The manifest's
+  strict_min_version is raised from 7.0 to 10.0 (strict_max_version stays
+  10.*), and the update manifests carry the same bound, so the updater on
+  Zotero 7–9 keeps those installs on 1.7.0. Introductions were repositioned
+  accordingly: the package description, both READMEs (badge, lead paragraph,
+  and the note that described the Zotero 7 fallback for the interleaved /
+  translation-only modes), and the reader's selection-unsupported message
+  that told users to upgrade to Zotero 7 now say Zotero 10. The runtime
+  capability probes are unchanged — features still degrade by detected
+  capability, not by version.
+
 ## [1.7.0] - 2026-10-09
 
 ### Added
@@ -244,6 +259,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 1.2.0 predate this changelog and are not backfilled.
 
+[1.7.1]: https://github.com/Liozhang/z-transplit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Liozhang/z-transplit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Liozhang/z-transplit/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/Liozhang/z-transplit/compare/v1.4.0...v1.5.0
