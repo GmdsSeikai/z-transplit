@@ -3,6 +3,39 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.7.2] - 2026-10-10
+
+### Changed
+
+- The plugin icon family adopts the 文/A swap motif that the sidebar and
+  item-panel icons already use. The manifest icon (ztransplit-any.svg), the
+  README light/dark variants, and the brand logo (logo.svg) replace the
+  T-in-a-disc mark with the same diagonal 文/A pair and crimson swap
+  arrows: the ink disc stays as the backdrop (the manifest icon must keep
+  explicit colors that read on both light and dark hosts), the white strokes
+  carry the two languages, and the crimson arrows carry the translation
+  act. Icon geometry is the sidebar motif scaled 0.58 about the disc center
+  with strokes held at 6 for legibility at 24 px.
+
+### Fixed
+
+- The parse-component download ("Download / repair…" for the OpenDataLoader
+  jar) failed on every source in a real host. Mirror probing and the full
+  22.5 MB wheel download succeeded; the failure came at the unpack step,
+  because Gecko's `nsIZipReader` has no `getEntries()` — entry enumeration
+  only offers `findEntries(pattern)`. Every source was discarded with
+  "zipReader.getEntries is not a function" and the pane reported a download
+  failure. Zip consumers now enumerate with `findEntries("*")` and unpack
+  with `nsIZipReader.extract` into a staging file that is SHA-256-verified
+  before it atomically replaces the target (extracted files are chmod'd
+  back to normal so a later overwrite or cleanup cannot fail on a read-only
+  bit). The packed-XPI extraction and the provenance readers share the same
+  treatment, and the stream path via a single-argument `readArrayBuffer` —
+  a form this host never supported — is gone. Verified end-to-end on a real
+  Zotero 10: check reports the component missing, download/repair lands a
+  verified 24,102,188-byte jar in the data directory, and a re-check
+  reports ready.
+
 ## [1.7.1] - 2026-10-09
 
 ### Changed
@@ -259,6 +292,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 1.2.0 predate this changelog and are not backfilled.
 
+[1.7.2]: https://github.com/Liozhang/z-transplit/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/Liozhang/z-transplit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Liozhang/z-transplit/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/Liozhang/z-transplit/compare/v1.5.0...v1.6.0
