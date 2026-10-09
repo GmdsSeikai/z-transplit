@@ -7,10 +7,17 @@
  *   - On mount, read the CURRENT reader's selection
  *     (`reader._internalReader._primaryView._selectionRanges`); multiple
  *     ranges are joined with a blank line.
+ *   - Live selection sync: Zotero's official reader event
+ *     「renderTextSelectionPopup」 (one shared listener per process, fanned out
+ *     to panes by item identity) re-reads the selection ~250 ms after the user
+ *     completes a selection — no manual 「刷新选区」 click needed. A re-fire
+ *     for an unchanged selection is a no-op.
  *   - Three blocks: source text (with a 「刷新选区」 button) → language bar
  *     (auto-detect source → target-language input, defaulting to
  *     `Zotero.locale`, Enter triggers, IME composition does not; a blur or
- *     Enter with an unchanged language never retriggers) → result area.
+ *     Enter with an unchanged language never retriggers; plus an
+ *     「自动翻译」 checkbox bound to `translate.auto` that fires the pending
+ *     selection the moment it is turned on) → result area.
  *   - Result area has four states: loading (CSS skeleton breathing lines),
  *     error (message + retry), success (translation + copy), idle (selection
  *     ready but auto-translate off → a 「翻译」 button — never a repeated
@@ -42,7 +49,8 @@
  */
 
 import { getString } from "../utils/locale";
-import { getPref } from "../utils/prefs";
+import { getPref, setPref } from "../utils/prefs";
+import { config } from "../../package.json";
 import { createAbortController } from "../utils/abort";
 import { toErrorMessage } from "../utils/error";
 import { isIMEComposing } from "../utils/ime";
@@ -122,7 +130,11 @@ const PANE_CSS = `
   flex-direction: column;
   gap: 8px;
   width: 100%;
-  max-width: 100%;
+  /* The sidebar can be dragged arbitrarily narrow: keep a readable floor
+     (~248px). Below that the pane keeps this width and overflows outward —
+     the item pane's scroll container (overflow-y:auto computes overflow-x to
+     auto) shows a horizontal scrollbar instead of squeezing the content. */
+  min-width: 15.5em;
   box-sizing: border-box;
   color: var(--fill-primary, inherit);
   font: inherit;
@@ -160,13 +172,14 @@ const PANE_CSS = `
 /* Block 2 — language bar */
 .${CLS}-lang-bar {
   display: flex; align-items: center; gap: 6px; min-width: 0;
+  flex-wrap: wrap;
 }
 .${CLS}-lang-auto {
   font-size: 0.92em; opacity: 0.85; white-space: nowrap;
 }
 .${CLS}-lang-arrow { font-size: 0.92em; opacity: 0.6; }
 .${CLS}-lang-input {
-  flex: 1 1 auto; min-width: 0;
+  flex: 1 1 9em; min-width: 9em;
   padding: 3px 6px;
   border: 1px solid var(--fill-quinary, rgba(127,127,127,0.35));
   border-radius: 5px;
@@ -178,6 +191,19 @@ const PANE_CSS = `
 .${CLS}-lang-input:focus-visible {
   outline: 2px solid var(--color-focus-border, var(--accent-blue, #4072e5));
   outline-offset: -1px;
+}
+
+/* Auto-translate switch (checkbox; sits on the language-bar row, wraps with
+   flex-wrap when narrow) */
+.${CLS}-auto {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.92em; white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+.${CLS}-auto input {
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Buttons — Zotero 7 chrome-button look (padding, radius, hover fill) */
@@ -198,6 +224,16 @@ const PANE_CSS = `
   outline-offset: 1px;
 }
 .${CLS}-btn:disabled { opacity: 0.55; cursor: default; }
+/* Primary actions (Translate / Look up once a selection is ready) use the
+   brand crimson #b5343a — a literal, not a theme token, so the brand color
+   does not drift with the host theme; same family as the pane's icons. */
+.${CLS}-btn-primary {
+  border-color: #b5343a;
+  background: #b5343a;
+  color: #ffffff;
+}
+.${CLS}-btn-primary:hover { background: #b5343a; filter: brightness(1.1); }
+.${CLS}-btn-primary:active { background: #b5343a; filter: brightness(0.92); }
 
 /* Block 3 — result area */
 .${CLS}-result {
@@ -298,8 +334,8 @@ const PANE_CSS = `
 }
 .${CLS}-chip:hover { background: var(--fill-quinary, rgba(127,127,127,0.18)); }
 .${CLS}-chip-active {
-  border-color: var(--accent-blue, #4072e5);
-  color: var(--accent-blue, #4072e5);
+  border-color: #b5343a;
+  color: #b5343a;
 }
 `;
 
@@ -454,6 +490,68 @@ function loadTranslatorModule(): Promise<any> {
 /** One live pane per section body (Zotero re-renders a body for new items). */
 const mountedPanes = new WeakMap<HTMLElement, TranslatePaneHandle>();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Live selection sync (reader 「renderTextSelectionPopup」 event)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One pane's interest in reader selection changes. Zotero fires the official
+ * 「renderTextSelectionPopup」 reader event every time the user completes a
+ * text selection in a reader; each mounted pane decides whether the event's
+ * reader is its own (by item identity) and re-reads the selection.
+ */
+interface SelectionSyncTarget {
+  /** Does this event's reader belong to the pane (same item / parent item)? */
+  matchesReader(reader: any): boolean;
+  /** The pane's selection should be re-read (callers debounce). */
+  onSelection(): void;
+}
+
+/** Live panes interested in selection changes (module scope, event fanned out). */
+const selectionSyncTargets = new Set<SelectionSyncTarget>();
+
+/** Whether the ONE shared reader event listener is in place. */
+let readerSelectionListenerRegistered = false;
+
+/**
+ * Register the shared 「renderTextSelectionPopup」 listener once per process,
+ * keyed to this plugin so Zotero revokes it on shutdown. The event fires with
+ * `{ reader, doc, params, append }`; we only use `reader` to fan out to panes.
+ */
+function ensureReaderSelectionSync(): void {
+  if (readerSelectionListenerRegistered) return;
+  const Reader = (globalThis as any)?.Zotero?.Reader;
+  if (typeof Reader?.registerEventListener !== "function") {
+    safeDebug(
+      "[Z-Transplit] translatePane: Zotero.Reader.registerEventListener unavailable — live selection sync off",
+    );
+    return;
+  }
+  try {
+    Reader.registerEventListener(
+      "renderTextSelectionPopup",
+      (event: any) => {
+        const reader = event?.reader;
+        for (const target of [...selectionSyncTargets]) {
+          try {
+            if (target.matchesReader(reader)) target.onSelection();
+          } catch (e) {
+            safeDebug(
+              "[Z-Transplit] translatePane: selection sync target failed: " + e,
+            );
+          }
+        }
+      },
+      config.addonID,
+    );
+    readerSelectionListenerRegistered = true;
+  } catch (e) {
+    safeDebug(
+      "[Z-Transplit] translatePane: registerEventListener failed: " + e,
+    );
+  }
+}
+
 /**
  * Mount the translate pane into an item-pane section body.
  *
@@ -543,9 +641,19 @@ export function mountTranslatePane(
   langInput.value = targetLang;
   langInput.placeholder = getString("pane-translate-target-placeholder");
   langInput.setAttribute("aria-label", getString("pane-translate-target-placeholder"));
+  // 自动翻译开关：与 translate.auto 偏好双向绑定（见 handleAutoToggle）。
+  const autoLabel = el(doc, "label", `${CLS}-auto`);
+  const autoCheck = el(doc, "input") as HTMLInputElement;
+  autoCheck.type = "checkbox";
+  autoCheck.checked = !!getPref("translate.auto");
+  const autoText = el(doc, "span");
+  autoText.textContent = getString("pane-translate-auto");
+  autoLabel.appendChild(autoCheck);
+  autoLabel.appendChild(autoText);
   langBar.appendChild(langAuto);
   langBar.appendChild(langArrow);
   langBar.appendChild(langInput);
+  langBar.appendChild(autoLabel);
 
   // Block 3 — result area
   const resultArea = el(doc, "div", `${CLS}-result`);
@@ -752,7 +860,7 @@ export function mountTranslatePane(
       // Selection is ready but auto-translate is off → offer the action.
       // Never re-show 「请选择文本」 here (leadero §9.4).
       const box = el(doc, "div", `${CLS}-result-idle`);
-      const action = el(doc, "button", `${CLS}-btn`) as HTMLButtonElement;
+      const action = el(doc, "button", `${CLS}-btn ${CLS}-btn-primary`) as HTMLButtonElement;
       action.type = "button";
       action.textContent = getString(
         wordMode ? "pane-translate-lookup-action" : "pane-translate-action",
@@ -1024,6 +1132,30 @@ export function mountTranslatePane(
     renderAll();
   }
 
+  /**
+   * Live-sync entry (reader selection event). The popup event can re-fire for
+   * an unchanged selection (popup re-render), so act only when the selection
+   * text actually differs from what the pane already shows — otherwise a
+   * re-render would reset the copy state or re-issue an identical request.
+   */
+  function handleLiveSelection(): void {
+    if (destroyed) return;
+    const read = readSelection(doc, itemID);
+    if (read.kind !== "text") return; // 空态仍由手动刷新显式触发
+    if (read.text === sourceText) return;
+    handleRefreshSelection();
+  }
+
+  /** 自动翻译开关：写回 translate.auto，打开时对当前选区立即生效。 */
+  function handleAutoToggle(): void {
+    const on = autoCheck.checked;
+    setPref("translate.auto", on);
+    if (!on || !sourceText || status === "loading") return;
+    // 开关打开瞬间选区已在：立刻出结果，不再要求用户点一次「刷新选区」。
+    if (wordMode) void runLookup(sourceText);
+    else void runTranslation(sourceText);
+  }
+
   function handleRefreshSelection(): void {
     copyError = null; // a new selection makes the old copy hint stale
     const read = readSelection(doc, itemID);
@@ -1074,6 +1206,7 @@ export function mountTranslatePane(
 
   // ── listeners (tracked so destroy() can revoke them all) ──
   listen(refreshBtn, "click", () => handleRefreshSelection());
+  listen(autoCheck, "change", () => handleAutoToggle());
   listen(langInput, "input", () => {
     targetLang = langInput.value;
   });
@@ -1093,6 +1226,40 @@ export function mountTranslatePane(
       langInput.blur(); // blur → handleLangBlur → translate
     }
   });
+
+  // ── live selection sync target (per pane; debounced) ──
+  let syncTimer: ReturnType<typeof setTimeout> | null = null;
+  const syncTarget: SelectionSyncTarget = {
+    matchesReader(reader: any): boolean {
+      if (destroyed) return false;
+      if (itemID === undefined) {
+        // No item binding: follow the active tab's reader by identity.
+        return !!reader && reader === resolveCurrentReader(doc);
+      }
+      // Same item, or the reader shows this item's attachment (same tolerance
+      // resolveCurrentReader applies to parent/attachment identity).
+      if (reader?.itemID === itemID) return true;
+      try {
+        const parentID = (globalThis as any)?.Zotero?.Items?.get?.(reader?.itemID)
+          ?.parentItemID;
+        return parentID === itemID;
+      } catch {
+        return false;
+      }
+    },
+    onSelection(): void {
+      if (destroyed) return;
+      // Coalesce the popup event's possible re-fires while the selection
+      // gesture settles (drag re-renders) into one re-read.
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = setTimeout(() => {
+        syncTimer = null;
+        handleLiveSelection();
+      }, 250);
+    },
+  };
+  selectionSyncTargets.add(syncTarget);
+  ensureReaderSelectionSync();
 
   // ── mount effect (leadero's useEffect(…, [])) ──
   const initial = readSelection(doc, itemID);
@@ -1140,6 +1307,9 @@ export function mountTranslatePane(
       copiedTimer = null;
       if (copyErrorTimer) clearTimeout(copyErrorTimer);
       copyErrorTimer = null;
+      if (syncTimer) clearTimeout(syncTimer);
+      syncTimer = null;
+      selectionSyncTargets.delete(syncTarget);
       for (const { target, type, handler } of listeners.splice(0)) {
         try {
           target.removeEventListener(type, handler);

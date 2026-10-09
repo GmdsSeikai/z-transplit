@@ -94,13 +94,19 @@ export function registerTranslateUI(): boolean {
     const paneID = mgr.registerSection({
       paneID: TRANSLATE_PANE_ID,
       pluginID: addonID(),
+      // 图标为「文 / A 互换」母题的品牌配色版（墨 = 原文，绯红 = 翻译/互换），
+      // 显式配色：Zotero 按 background-image 绘制插件 section 图标，并提供
+      // darkIcon 双变体（prefers-color-scheme 切换），因此不需要 currentColor
+      // 反色（QA S7 已同步允许「显式配色 + 配对 -dark 变体」）。
       header: {
         l10nID: HEADER_L10N_ID,
         icon: "chrome://ztransplit/content/icons/translate.svg",
+        darkIcon: "chrome://ztransplit/content/icons/translate-dark.svg",
       },
       sidenav: {
         l10nID: SIDENAV_L10N_ID,
         icon: "chrome://ztransplit/content/icons/translate-20.svg",
+        darkIcon: "chrome://ztransplit/content/icons/translate-20-dark.svg",
       },
       onItemChange: ({
         tabType,

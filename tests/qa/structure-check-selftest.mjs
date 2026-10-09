@@ -232,12 +232,14 @@ const ALL_PASS = { S1: "PASS", S2: "PASS", S3: "PASS", S4: "PASS", S5: "PASS", S
   expect("manifest 图标误用 currentColor → S7 FAIL", runChecker(root), { ...ALL_PASS, S7: "FAIL" });
 }
 
-// 8b. chrome://-referenced UI icon lacks currentColor → S7 FAIL.
+// 8b. chrome://-referenced UI icon with explicit colors but no `-dark.svg`
+//     companion → S7 FAIL (the dark variant is what keeps it visible on dark
+//     hosts, since Zotero switches plugin section icons by prefers-color-scheme).
 {
   const root = join(FIXTURES, "ui-icon-not-currentcolor");
   buildGoodPlugin(root);
   write(root, "addon/content/icons/translate.svg", SVG_EXPLICIT);
-  expect("UI 图标缺 currentColor → S7 FAIL", runChecker(root), { ...ALL_PASS, S7: "FAIL" });
+  expect("UI 图标显式配色但缺 -dark 变体 → S7 FAIL", runChecker(root), { ...ALL_PASS, S7: "FAIL" });
 }
 
 // 8c. Brand logo (not in manifest, no chrome:// ref) may be full-color.
@@ -245,6 +247,16 @@ const ALL_PASS = { S1: "PASS", S2: "PASS", S3: "PASS", S4: "PASS", S5: "PASS", S
   const root = join(FIXTURES, "brand-logo-fullcolor");
   buildGoodPlugin(root);
   expect("品牌 logo 全彩不违规 → S7 PASS", runChecker(root), { ...ALL_PASS, S7: "PASS" });
+}
+
+// 8d. chrome://-referenced UI icon with explicit colors AND a paired
+//     `-dark.svg` companion → S7 PASS (registerSection darkIcon pair).
+{
+  const root = join(FIXTURES, "ui-icon-explicit-with-dark");
+  buildGoodPlugin(root);
+  write(root, "addon/content/icons/translate.svg", SVG_EXPLICIT);
+  write(root, "addon/content/icons/translate-dark.svg", SVG_EXPLICIT);
+  expect("UI 图标显式配色 + 配对 -dark 变体 → S7 PASS", runChecker(root), ALL_PASS);
 }
 
 // 9. leadero EXECUTABLE reference in src → S9 FAIL (comment mentions are fine,

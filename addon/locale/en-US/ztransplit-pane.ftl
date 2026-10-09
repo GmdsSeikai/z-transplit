@@ -32,6 +32,7 @@ pane-translate-selection-unsupported = This Zotero version does not expose the r
 
 ## Block 2 — language bar
 pane-translate-lang-auto = Detect automatically
+pane-translate-auto = Auto translate
 pane-translate-target-placeholder =
     .placeholder = Target language, e.g. en-US
 

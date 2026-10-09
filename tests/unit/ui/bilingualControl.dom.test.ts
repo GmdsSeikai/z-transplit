@@ -8,7 +8,7 @@
  *   - behavior-F1：buildInterleave 失败回滚阅读模式，再点开关是重新开始
  *   - behavior-F3：退出双语 / 面板销毁停止朗读并复位 UI
  *   - behavior-F8：朗读译文从最顶可见块对应的段开始
- *   - 模式下拉与实际模式同步（defaultMode=transOnly），退出复位 interleave
+ *   - 模式按钮与实际模式同步（defaultMode=transOnly），退出复位 interleave
  *
  * speechSynthesis 用Fake：cancel/finish 的 onend 一律落在后续宏任务（与真实
  * 平台一致），因此 stale-onend 竞态在本测试中真实复现。
@@ -185,9 +185,19 @@ function setup(prefs: Record<string, unknown> = {}): Ctx {
     statusText: () =>
       String(doc.querySelector(".ztransplit-bc-status")?.textContent ?? ""),
     modeValue: () =>
-      String((doc.querySelector("select.ztransplit-bc-mode") as any)?.value ?? ""),
-    modeDisabled: () =>
-      !!(doc.querySelector("select.ztransplit-bc-mode") as any)?.disabled,
+      String(
+        (
+          doc.querySelector(
+            "button.ztransplit-bc-mode-btn[data-active='true']",
+          ) as any
+        )?.dataset?.mode ?? "",
+      ),
+    modeDisabled: () => {
+      const btns = [
+        ...doc.querySelectorAll("button.ztransplit-bc-mode-btn"),
+      ] as HTMLButtonElement[];
+      return btns.length > 0 && btns.every((b) => b.disabled);
+    },
   };
 }
 
@@ -319,7 +329,7 @@ describe("双语控制条：会话与面板生命周期", () => {
     ctx = undefined;
   });
 
-  it("behavior-F3：退出双语停止朗读，按钮复位、下拉复位 interleave", async () => {
+  it("behavior-F3：退出双语停止朗读，按钮复位、模式复位 interleave", async () => {
     ctx = setup();
     h.handle = makeHandle();
     await toggleOn(ctx);
@@ -377,11 +387,16 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(vi.mocked(exitBilingualSession)).toHaveBeenCalledTimes(1);
   });
 
-  it("模式下拉与实际模式同步（defaultMode=transOnly），退出复位", async () => {
+  it("模式按钮与实际模式同步（defaultMode=transOnly），退出复位", async () => {
     ctx = setup({ "reader.bilingual.defaultMode": "transOnly" });
     h.handle = makeHandle();
     await toggleOn(ctx);
     expect(ctx.modeValue()).toBe("transOnly");
+
+    // 点「上下对照」→ 高亮与底层模式同步切换
+    ctx.click("bilingual-mode-interleave");
+    expect(ctx.modeValue()).toBe("interleave");
+    expect(h.handle.setMode).toHaveBeenCalledWith("interleave");
 
     ctx.click("bilingual-exit");
     await flush();

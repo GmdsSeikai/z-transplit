@@ -3,9 +3,9 @@
  * translate pane section.
  *
  * Renders a compact bar above the translate pane root: a bilingual toggle,
- * a presentation-mode switch (interleaved / translation-only), progress and
- * a status line. On hosts without the Zotero 10 SDT reading mode it renders
- * a capability disclosure instead of the controls.
+ * presentation-mode buttons (上下对照 interleave / 仅译文 translation-only),
+ * progress and a status line. On hosts without the Zotero 10 SDT reading mode
+ * it renders a capability disclosure instead of the controls.
  *
  * One live bilingual session per process: starting a session for another item
  * exits the previous one. The session (reading-mode overlay + injected
@@ -102,25 +102,31 @@ function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
   style.textContent = `
 .${CLS}-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  min-width: 15.5em;
   margin: 2px 0 8px 0; padding: 6px 8px;
   border: var(--material-border-quinary, 1px solid rgba(127,127,127,0.25));
   border-radius: 5px;
   background: var(--material-background, transparent);
 }
-.${CLS}-ra-btn, .${CLS}-toggle {
+/* Every action is a button (bilingual toggle / interleave / translation-only /
+   read original / read translation). Active states use the brand crimson
+   #b5343a (logo.svg palette, a literal that does not drift with the theme) —
+   same family as the translate pane's primary buttons and word-card chips. */
+.${CLS}-ra-btn, .${CLS}-toggle, .${CLS}-mode-btn {
   font: inherit; cursor: pointer; padding: 2px 10px;
   border: 1px solid var(--material-border-quinary, rgba(127,127,127,0.35));
   border-radius: 4px; background: var(--material-background, transparent);
   color: var(--zotero-text-color, inherit);
+  display: inline-flex; align-items: center; gap: 4px;
 }
-.${CLS}-toggle[data-active="true"] {
-  background: var(--accent-blue, #4072e5); color: #fff;
-  border-color: var(--accent-blue, #4072e5);
+.${CLS}-ra-btn:hover, .${CLS}-toggle:hover, .${CLS}-mode-btn:hover:enabled {
+  background: var(--fill-quinary, rgba(127,127,127,0.18));
 }
-.${CLS}-mode {
-  font: inherit; padding: 1px 4px; max-width: 10em;
-  color: var(--zotero-text-color, inherit);
-  background: var(--material-background, transparent);
+.${CLS}-toggle[data-active="true"], .${CLS}-mode-btn[data-active="true"] {
+  background: #b5343a; color: #ffffff; border-color: #b5343a;
+}
+.${CLS}-ra-btn:disabled, .${CLS}-toggle:disabled, .${CLS}-mode-btn:disabled {
+  opacity: 0.55; cursor: default;
 }
 .${CLS}-progress { font-size: 0.88em; color: var(--zotero-text-color-secondary, GrayText); }
 .${CLS}-status { width: 100%; font-size: 0.88em; color: var(--zotero-text-color-secondary, GrayText); }
@@ -231,10 +237,10 @@ async function startSession(
       },
     });
     if (defaultMode === "transOnly") handle.setMode("transOnly");
-    // Sync the dropdown with the ACTUAL mode — the program never writes it
+    // Sync the mode buttons with the ACTUAL mode — the program never writes it
     // anywhere else, so a default of transOnly would otherwise show a stale
-    // selection (the dropdown's own change listener is the only other writer).
-    if (state.modeSelect) state.modeSelect.value = handle.getMode();
+    // highlight (setMode's own click listener is the only other writer).
+    state.setMode(handle.getMode());
 
     active = { itemID: itemID ?? -1, session, handle, abort };
     state.setActive(true);
@@ -402,7 +408,11 @@ function startReadAloud(
 interface ControlState {
   doc: Document;
   toggle: HTMLButtonElement;
-  modeSelect: HTMLSelectElement | null;
+  /** 对照模式按钮（上下对照 / 仅译文），会话外禁用。 */
+  modeButtons: {
+    interleave: HTMLButtonElement;
+    transOnly: HTMLButtonElement;
+  } | null;
   progressLabel: HTMLElement;
   status: HTMLElement;
   controlsBox: HTMLElement;
@@ -418,6 +428,8 @@ interface ControlState {
   setStatus(msg: string): void;
   setProgress(msg: string): void;
   setActive(activeNow: boolean): void;
+  /** Sync the mode buttons' active highlight with the session's actual mode. */
+  setMode(mode: BilingualMode): void;
   setReadAloudPlaying(playing: boolean): void;
   /** Re-evaluate the 朗读译文 enabled state (session live + text ready). */
   refreshReadAloudButtons(): void;
@@ -449,14 +461,14 @@ export function mountBilingualControl(options: {
   toggle.type = "button";
   toggle.textContent = getString("bilingual-enable");
 
-  let modeSelect: HTMLSelectElement | null = null;
+  let modeButtons: ControlState["modeButtons"] = null;
   const progressLabel = el(doc, "span", `${CLS}-progress`);
   const status = el(doc, "span", `${CLS}-status`);
 
   const state: ControlState = {
     doc,
     toggle,
-    modeSelect: null,
+    modeButtons: null,
     progressLabel,
     status,
     controlsBox,
@@ -473,11 +485,12 @@ export function mountBilingualControl(options: {
       toggle.textContent = getString(
         activeNow ? "bilingual-exit" : "bilingual-enable",
       );
-      if (modeSelect) {
-        modeSelect.disabled = !activeNow;
-        // Leaving a session resets the dropdown so no mode leaks into the
-        // next one (startSession writes the actual mode right after).
-        if (!activeNow) modeSelect.value = "interleave";
+      if (modeButtons) {
+        modeButtons.interleave.disabled = !activeNow;
+        modeButtons.transOnly.disabled = !activeNow;
+        // Leaving a session resets the highlight so no mode leaks into the
+        // next one (startSession writes the actual mode right after entering).
+        if (!activeNow) state.setMode("interleave");
       }
       state.refreshReadAloudButtons();
       if (activeNow) {
@@ -488,6 +501,11 @@ export function mountBilingualControl(options: {
         state.setProgress("");
         state.setStatus("");
       }
+    },
+    setMode(mode) {
+      if (!modeButtons) return;
+      modeButtons.interleave.dataset.active = String(mode === "interleave");
+      modeButtons.transOnly.dataset.active = String(mode === "transOnly");
     },
     setReadAloudPlaying(playing) {
       const b = state.readAloudButtons;
@@ -545,25 +563,32 @@ export function mountBilingualControl(options: {
 
   controlsBox.appendChild(toggle);
 
-  // Mode selector (shown while active; populated from the same three states
-  // the view supports minus "off", which is the toggle itself).
-  const selectWrap = el(doc, "select", `${CLS}-mode`) as HTMLSelectElement;
-  const mkOption = (value: string, key: string): void => {
-    const opt = doc.createElement("option");
-    opt.value = value;
-    opt.textContent = getString(key);
-    selectWrap.appendChild(opt);
+  // Presentation-mode buttons (上下对照 / 仅译文) — buttons instead of the old
+  // dropdown so every control in the pane is a button; disabled outside a
+  // session, active highlight synced to the handle's ACTUAL mode.
+  const mkModeBtn = (mode: BilingualMode, key: string): HTMLButtonElement => {
+    const b = el(doc, "button", `${CLS}-mode-btn`) as HTMLButtonElement;
+    b.type = "button";
+    b.textContent = getString(key);
+    b.dataset.mode = mode;
+    b.disabled = true;
+    b.addEventListener("click", () => {
+      if (!active) return;
+      try {
+        active.handle.setMode(mode);
+        state.setMode(active.handle.getMode());
+      } catch (e) {
+        safeDebug("[Z-Transplit] bilingualControl setMode: " + e);
+      }
+    });
+    return b;
   };
-  mkOption("interleave", "bilingual-mode-interleave");
-  mkOption("transOnly", "bilingual-mode-trans-only");
-  selectWrap.disabled = true;
-  selectWrap.addEventListener("change", () => {
-    if (!active) return;
-    active.handle.setMode(selectWrap.value as BilingualMode);
-  });
-  modeSelect = selectWrap;
-  state.modeSelect = selectWrap;
-  controlsBox.appendChild(selectWrap);
+  const interleaveBtn = mkModeBtn("interleave", "bilingual-mode-interleave");
+  const transOnlyBtn = mkModeBtn("transOnly", "bilingual-mode-trans-only");
+  modeButtons = { interleave: interleaveBtn, transOnly: transOnlyBtn };
+  state.modeButtons = modeButtons;
+  controlsBox.appendChild(interleaveBtn);
+  controlsBox.appendChild(transOnlyBtn);
   controlsBox.appendChild(progressLabel);
 
   // ── read-aloud row ──────────────────────────────────────────────────────

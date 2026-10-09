@@ -280,7 +280,11 @@ try {
       //   - manifest-declared icons: explicit fills only (manifest surfaces
       //     cannot theme currentColor) → must NOT contain currentColor
       //   - chrome://-referenced UI icons (section headers, sidenav, pane):
-      //     themed by Zotero → MUST be currentColor
+      //     EITHER currentColor (themed by Zotero), OR explicitly brand-colored
+      //     with a paired `<basename>-dark.svg` companion on disk — Zotero
+      //     renders plugin section icons as background images and switches
+      //     light/dark via registerSection's header/sidenav darkIcon
+      //     (`-dark.svg` files themselves are dark variants, exempt).
       //   - brand-only assets (e.g. a full-color README logo referenced by no
       //     chrome:// URL and not in manifest): unconstrained
       const manifestIconNames = new Set(
@@ -300,11 +304,17 @@ try {
         if (/href\s*=\s*["']https?:/i.test(text)) problems.push(`${f}: 含外链 href`);
         if (manifestIconNames.has(f) && /currentColor/.test(text))
           problems.push(`${f}: manifest 声明的图标应显式配色而非 currentColor`);
-        if (chromeIconNames.has(f) && !manifestIconNames.has(f) && !/currentColor/.test(text))
-          problems.push(`${f}: 被 chrome:// 引用的 UI 图标应使用 currentColor`);
+        if (chromeIconNames.has(f) && !manifestIconNames.has(f) && !/currentColor/.test(text)) {
+          if (/-dark\.svg$/i.test(f)) continue;
+          const darkCompanion = f.replace(/\.svg$/i, "-dark.svg");
+          if (!svgs.includes(darkCompanion))
+            problems.push(
+              `${f}: 显式配色的 UI 图标需配对 ${darkCompanion}（darkIcon 变体），或改用 currentColor`,
+            );
+        }
       }
       if (problems.length) fail("S7", `SVG 问题: ${problems.join("; ")}`, `${svgs.length} 个 SVG`);
-      else pass("S7", `${svgs.length} 个 SVG 均合法（manifest 显式配色 / UI 图标 currentColor / 品牌图不约束）`, svgs.join(" "));
+      else pass("S7", `${svgs.length} 个 SVG 均合法（manifest 显式配色 / UI 图标 currentColor 或显式配色+dark 变体 / 品牌图不约束）`, svgs.join(" "));
     }
   }
 }

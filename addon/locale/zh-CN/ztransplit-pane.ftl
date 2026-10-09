@@ -31,6 +31,7 @@ pane-translate-selection-unsupported = 当前 Zotero 版本未开放阅读器选
 
 ## 第 2 段 — 语言栏
 pane-translate-lang-auto = 自动检测
+pane-translate-auto = 自动翻译
 pane-translate-target-placeholder =
     .placeholder = 目标语言，如 zh-CN
 
