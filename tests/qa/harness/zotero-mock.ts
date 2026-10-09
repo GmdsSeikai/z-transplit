@@ -7,7 +7,9 @@
  *     platform.ts OS detection can be tested on any host
  *   - PDFTranslate bridge (present/absent toggle)
  *   - ItemPaneManager.registerSection (spy: records pane config)
- *   - Reader integration (tabID + _selectionRanges) for the translate pane
+ *   - Reader integration (tabID + _selectionRanges) for the translate pane,
+ *     plus registerEventListener + fireSelectionPopup so tests can drive the
+ *     「renderTextSelectionPopup」 live-selection-sync path
  *   - ProgressWindow / Items / MainWindow / DataDirectory stubs
  *
  * Usage:
@@ -80,6 +82,24 @@ export class PrefMap {
   }
 }
 
+/**
+ * Module-level reader-event registry. Zotero.Reader is a process-wide
+ * singleton in production, and the plugin registers its shared selection-sync
+ * listener once per process — while a fresh ZoteroMock is built per test even
+ * though the plugin module (and its "already registered" flag) persists across
+ * tests in a file. Mirroring the singleton with a module-level array keeps
+ * fireSelectionPopup reaching listeners registered by earlier tests' mounts.
+ */
+const sharedReaderEventListeners: Array<{
+  type: string;
+  handler: (event: any) => void;
+}> = [];
+
+/** Drop every registered reader-event listener (test isolation helper). */
+export function resetReaderEventListeners(): void {
+  sharedReaderEventListeners.length = 0;
+}
+
 export class ZoteroMock {
   readonly prefs: PrefMap;
   readonly prefix: string;
@@ -90,8 +110,37 @@ export class ZoteroMock {
   locale: string;
   platform: "win" | "mac" | "linux";
   pdfTranslate: any;
-  reader: ReaderSelectionStub | null = null;
+  private readerStub: ReaderSelectionStub | null = null;
+  private readerInstance: any = null;
   items: Map<number, any> = new Map();
+
+  /**
+   * Selection stub. Assigning a NEW object invalidates the cached reader
+   * instance: Zotero's getByTabID returns a stable ReaderInstance, and the
+   * translate pane compares readers by identity (matchesReader), so the mock
+   * must hand out the same object between assignments.
+   */
+  get reader(): ReaderSelectionStub | null {
+    return this.readerStub;
+  }
+
+  set reader(v: ReaderSelectionStub | null) {
+    this.readerStub = v;
+    this.readerInstance = null;
+  }
+
+  private getReaderInstance(): any {
+    if (!this.readerStub) return null;
+    if (!this.readerInstance) {
+      this.readerInstance = {
+        itemID: this.readerStub.itemID,
+        _internalReader: {
+          _primaryView: { _selectionRanges: this.readerStub.selectionRanges },
+        },
+      };
+    }
+    return this.readerInstance;
+  }
   private savedZotero: unknown;
   private savedTabs: unknown;
 
@@ -163,14 +212,18 @@ export class ZoteroMock {
         close() {}
       },
       Reader: {
+        registerEventListener: (type: string, handler: (event: any) => void) => {
+          sharedReaderEventListeners.push({ type, handler });
+        },
+        unregisterEventListener: (type: string, handler: (event: any) => void) => {
+          const i = sharedReaderEventListeners.findIndex(
+            (l) => l.type === type && l.handler === handler,
+          );
+          if (i >= 0) sharedReaderEventListeners.splice(i, 1);
+        },
         getByTabID: (tabID: number) => {
           if (!self.reader || self.reader.tabID !== tabID) return null;
-          return {
-            itemID: self.reader.itemID,
-            _internalReader: {
-              _primaryView: { _selectionRanges: self.reader.selectionRanges },
-            },
-          };
+          return self.getReaderInstance();
         },
       },
     };
@@ -188,6 +241,29 @@ export class ZoteroMock {
     else (globalThis as any).Zotero = this.savedZotero;
     if (this.savedTabs === undefined) delete (globalThis as any).Zotero_Tabs;
     else (globalThis as any).Zotero_Tabs = this.savedTabs;
+  }
+
+  /**
+   * Fire 「renderTextSelectionPopup」 the way Zotero's reader iframe does:
+   * `{ reader, doc, params: { annotation }, append }` where `annotation.text`
+   * is the popup's own selection text. Pass `undefined` (or omit) to simulate
+   * a popup render that carries no annotation.
+   */
+  fireSelectionPopup(annotationText?: string): void {
+    const tabs = (globalThis as any).Zotero_Tabs ?? { selectedID: this.reader?.tabID ?? 1 };
+    const reader = this.getReaderInstance();
+    const event = {
+      reader,
+      doc: null,
+      params: {
+        annotation:
+          annotationText === undefined ? undefined : { text: annotationText },
+      },
+      append: () => {},
+    };
+    for (const { type, handler } of [...sharedReaderEventListeners]) {
+      if (type === "renderTextSelectionPopup") handler(event);
+    }
   }
 }
 

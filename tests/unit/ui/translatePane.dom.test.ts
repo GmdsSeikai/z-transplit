@@ -258,6 +258,79 @@ describe("B16 阅读器翻译面板：输入交互", () => {
   });
 });
 
+describe("B16 选区读数过期时以弹窗文本为准（2026-10-09 回归）", () => {
+  let ctx: Ctx;
+  afterEach(() => {
+    ctx?.fm.uninstall();
+    ctx?.z.uninstall();
+    ctx?.dom.window.close();
+  });
+
+  const AUTO_PREFS = { ...ENGINE_PREFS, "translate.auto": true };
+
+  /** 实时同步有 250 ms 去抖，另加一次请求往返。 */
+  async function settleAfterPopup(): Promise<void> {
+    await flush(320);
+    await flush();
+  }
+
+  it("实时同步：范围读数仍是旧单词而弹窗文本为新句子 → 翻译新句子", async () => {
+    ctx = setup(AUTO_PREFS, ["hello"]);
+    routeOK(ctx.fm);
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    await flush();
+    expect(ctx.fm.calls.length).toBe(1); // hello 的挂载即译
+
+    // 用户划了一个长句：弹窗渲染并携带新句子，但 _selectionRanges 仍停在旧
+    // 单词（过期场景：新选区落在面板没有读到的那个阅读器视图里）
+    ctx.z.fireSelectionPopup("这是一段新句子选区");
+    await settleAfterPopup();
+
+    expect(ctx.text(ctx.body)).toContain("这是一段新句子选区");
+    expect(ctx.text(ctx.body)).not.toContain("hello");
+    expect(ctx.fm.calls.length).toBe(2);
+    expect(ctx.fm.calls[1].body).toContain("这是一段新句子选区");
+  });
+
+  it("「刷新选区」：范围读数过期时同样采用最近弹窗文本", async () => {
+    ctx = setup(AUTO_PREFS, ["hello"]);
+    routeOK(ctx.fm);
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    await flush();
+
+    ctx.z.fireSelectionPopup("这是一段新句子选区");
+    await settleAfterPopup();
+    const callsAfterLiveSync = ctx.fm.calls.length;
+
+    // 清掉引擎缓存，强制刷新真实发请求：请求体必须带句子（弹窗文本），
+    // 而不是过期的 "hello"（否则就是旧单词又被查了一遍的回归）
+    clearTranslationCache();
+    ctx.click(K.refresh);
+    await flush();
+    expect(ctx.text(ctx.body)).toContain("这是一段新句子选区");
+    expect(ctx.text(ctx.body)).not.toContain("hello");
+    expect(ctx.fm.calls.length).toBe(callsAfterLiveSync + 1);
+    expect(ctx.fm.calls[ctx.fm.calls.length - 1].body).toContain(
+      "这是一段新句子选区",
+    );
+  });
+
+  it("清除选区（点空白）后刷新：空读数生效，残留弹窗文本不复活选区", async () => {
+    ctx = setup(ENGINE_PREFS, ["hello"]);
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    ctx.z.fireSelectionPopup("hello"); // 单词的弹窗，与范围读数一致
+    await settleAfterPopup();
+    expect(ctx.text(ctx.body)).toContain("hello");
+
+    // 用户点空白清除选区：弹窗关闭不发事件，_selectionRanges 变为空
+    ctx.z.reader = { tabID: 1, selectionRanges: [] };
+    ctx.click(K.refresh);
+    await flush();
+    expect(ctx.text(ctx.body)).toContain(K.emptySelection);
+    expect(ctx.text(ctx.body)).not.toContain("hello");
+  });
+});
+
 describe("B16 阅读器翻译面板：失败显式披露（失败≠空）", () => {
   let ctx: Ctx;
   afterEach(() => {

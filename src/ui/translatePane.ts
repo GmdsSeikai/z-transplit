@@ -11,7 +11,10 @@
  *     「renderTextSelectionPopup」 (one shared listener per process, fanned out
  *     to panes by item identity) re-reads the selection ~250 ms after the user
  *     completes a selection — no manual 「刷新选区」 click needed. A re-fire
- *     for an unchanged selection is a no-op.
+ *     for an unchanged selection is a no-op. The event's own annotation text
+ *     (what the popup shows) outranks the `_selectionRanges` re-read, which
+ *     can be stale when the selection landed in a different reader view
+ *     (see resolveSelectionText).
  *   - Three blocks: source text (with a 「刷新选区」 button) → language bar
  *     (auto-detect source → target-language input, defaulting to
  *     `Zotero.locale`, Enter triggers, IME composition does not; a blur or
@@ -382,9 +385,13 @@ type TrackedListener = {
 export function resolveCurrentReader(doc: Document, itemID?: number): any {
   try {
     const win = doc?.defaultView as any;
+    // The pane's OWN realm first. In Zotero, window.Zotero and the global
+    // Zotero are the same object, so this is behaviour-neutral there — but a
+    // pane whose host window was torn down (tests, window close without
+    // destroy()) must resolve against ITS window, not whatever global happens
+    // to be installed now, or it follows another realm's active reader.
     const ZoteroGlobal: any =
-      (typeof Zotero === "undefined" ? undefined : (Zotero as any)) ??
-      win?.Zotero;
+      win?.Zotero ?? (typeof Zotero === "undefined" ? undefined : (Zotero as any));
     const Reader = ZoteroGlobal?.Reader ?? win?.Zotero?.Reader;
     const Zotero_Tabs = win?.Zotero_Tabs ?? ZoteroGlobal?.Tabs;
     const tabID: string | undefined = Zotero_Tabs?.selectedID;
@@ -503,8 +510,13 @@ const mountedPanes = new WeakMap<HTMLElement, TranslatePaneHandle>();
 interface SelectionSyncTarget {
   /** Does this event's reader belong to the pane (same item / parent item)? */
   matchesReader(reader: any): boolean;
-  /** The pane's selection should be re-read (callers debounce). */
-  onSelection(): void;
+  /**
+   * The pane's selection should be re-read (callers debounce). `popupText` is
+   * the 「renderTextSelectionPopup」 event's own annotation text — empty when
+   * the popup carried none. It is the freshest picture of what the user sees
+   * selected and takes precedence over the `_selectionRanges` re-read.
+   */
+  onSelection(popupText?: string): void;
 }
 
 /** Live panes interested in selection changes (module scope, event fanned out). */
@@ -516,7 +528,8 @@ let readerSelectionListenerRegistered = false;
 /**
  * Register the shared 「renderTextSelectionPopup」 listener once per process,
  * keyed to this plugin so Zotero revokes it on shutdown. The event fires with
- * `{ reader, doc, params, append }`; we only use `reader` to fan out to panes.
+ * `{ reader, doc, params: { annotation }, append }`; each matched pane gets the
+ * popup's own selection text (see SelectionSyncTarget.onSelection).
  */
 function ensureReaderSelectionSync(): void {
   if (readerSelectionListenerRegistered) return;
@@ -532,9 +545,17 @@ function ensureReaderSelectionSync(): void {
       "renderTextSelectionPopup",
       (event: any) => {
         const reader = event?.reader;
+        // The popup renders FROM the selection the user just completed, so its
+        // annotation text is what the user actually sees selected. Handing it
+        // to the pane avoids re-deriving the text from `_selectionRanges`,
+        // which can be stale (see resolveSelectionText).
+        const popupText =
+          typeof event?.params?.annotation?.text === "string"
+            ? event.params.annotation.text.trim()
+            : "";
         for (const target of [...selectionSyncTargets]) {
           try {
-            if (target.matchesReader(reader)) target.onSelection();
+            if (target.matchesReader(reader)) target.onSelection(popupText);
           } catch (e) {
             safeDebug(
               "[Z-Transplit] translatePane: selection sync target failed: " + e,
@@ -595,6 +616,13 @@ export function mountTranslatePane(
   let abortController: AbortController | null = null;
   /** Result of the last selection read — drives the source block's disclosure. */
   let lastRead: SelectionRead["kind"] = "empty";
+  /**
+   * Selection text carried by the most recent 「renderTextSelectionPopup」
+   * event — what the user saw in the popup. Empty until the first popup event;
+   * updated on every re-render of the popup. See resolveSelectionText for why
+   * this outranks a fresh `_selectionRanges` read.
+   */
+  let lastPopupText = "";
   /** Top of the word-card store, refreshed after mount and after each lookup. */
   let currentChips: WordCardRecord[] = [];
 
@@ -1134,16 +1162,48 @@ export function mountTranslatePane(
 
   /**
    * Live-sync entry (reader selection event). The popup event can re-fire for
-   * an unchanged selection (popup re-render), so act only when the selection
-   * text actually differs from what the pane already shows — otherwise a
-   * re-render would reset the copy state or re-issue an identical request.
+   * an unchanged selection (popup re-render), so act only when the effective
+   * selection text actually differs from what the pane already shows —
+   * otherwise a re-render would reset the copy state or re-issue an identical
+   * request.
    */
   function handleLiveSelection(): void {
     if (destroyed) return;
-    const read = readSelection(doc, itemID);
-    if (read.kind !== "text") return; // 空态仍由手动刷新显式触发
-    if (read.text === sourceText) return;
+    const text = resolveSelectionText(readSelection(doc, itemID));
+    if (!text) return; // 空态仍由手动刷新显式触发
+    if (text === sourceText) return;
     handleRefreshSelection();
+  }
+
+  /**
+   * Selection-text adjudication. The popup's own text wins whenever it
+   * disagrees with a fresh `_selectionRanges` read; the range read is only a
+   * fallback (no popup seen yet) and the sole authority for "selection was
+   * cleared" (closing the popup fires no event, so a lingering popup text must
+   * not resurrect a cleared selection).
+   *
+   * Why the popup outranks the ranges: Zotero renders the popup FROM the
+   * selection the user just completed, but a later read of
+   * `_selectionRanges` can come back stale — e.g. the new selection landed in
+   * the reader's secondary/split view while `_primaryView` still holds the
+   * previous word. That exact staleness re-ran the previous word's dictionary
+   * lookup (old card re-displayed, no translation) for a new sentence
+   * selection (2026-10-09 user report). When the two disagree we log it so the
+   * trigger can be diagnosed from debug output.
+   */
+  function resolveSelectionText(read: SelectionRead): string {
+    const rangeText = read.kind === "text" ? read.text : "";
+    if (rangeText && lastPopupText && lastPopupText !== rangeText) {
+      safeDebug(
+        "[Z-Transplit] translatePane: selection read is stale (ranges=" +
+          JSON.stringify(rangeText.slice(0, 80)) +
+          " popup=" +
+          JSON.stringify(lastPopupText.slice(0, 80)) +
+          ") — trusting the popup text",
+      );
+      return lastPopupText;
+    }
+    return rangeText;
   }
 
   /** 自动翻译开关：写回 translate.auto，打开时对当前选区立即生效。 */
@@ -1160,8 +1220,9 @@ export function mountTranslatePane(
     copyError = null; // a new selection makes the old copy hint stale
     const read = readSelection(doc, itemID);
     lastRead = read.kind;
-    if (read.kind === "text") {
-      setState({ sourceText: read.text });
+    const text = resolveSelectionText(read);
+    if (text) {
+      setState({ sourceText: text });
       if (copiedTimer) {
         clearTimeout(copiedTimer);
         copiedTimer = null;
@@ -1169,12 +1230,12 @@ export function mountTranslatePane(
       setState({ copied: false });
       // Word selections route to the dictionary chain when the feature is on;
       // everything else keeps the plain-translation path.
-      wordMode = !!getPref("wordcards.enabled") && isSingleWord(read.text);
+      wordMode = !!getPref("wordcards.enabled") && isSingleWord(text);
       // translate.auto is read LIVE — a pref flipped while the pane is open
       // takes effect on the next refresh.
       if (getPref("translate.auto")) {
-        if (wordMode) void runLookup(read.text);
-        else void runTranslation(read.text);
+        if (wordMode) void runLookup(text);
+        else void runTranslation(text);
       } else {
         // Nothing is in flight for the new selection.
         abortController?.abort();
@@ -1232,6 +1293,15 @@ export function mountTranslatePane(
   const syncTarget: SelectionSyncTarget = {
     matchesReader(reader: any): boolean {
       if (destroyed) return false;
+      // A pane whose host window went away without destroy() running (crash
+      // path, standalone mount) must stay inert — otherwise it reacts to
+      // reader events with stale bindings.
+      try {
+        const win = doc?.defaultView;
+        if (!win || win.closed) return false;
+      } catch {
+        return false;
+      }
       if (itemID === undefined) {
         // No item binding: follow the active tab's reader by identity.
         return !!reader && reader === resolveCurrentReader(doc);
@@ -1247,8 +1317,12 @@ export function mountTranslatePane(
         return false;
       }
     },
-    onSelection(): void {
+    onSelection(popupText?: string): void {
       if (destroyed) return;
+      // Capture the popup's own text at event time (freshest); the debounced
+      // re-read then adjudicates against it (resolveSelectionText). Empty
+      // payloads never erase an existing hint.
+      if (popupText) lastPopupText = popupText;
       // Coalesce the popup event's possible re-fires while the selection
       // gesture settles (drag re-renders) into one re-read.
       if (syncTimer) clearTimeout(syncTimer);
