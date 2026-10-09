@@ -92,7 +92,14 @@ export function cardDate(ts: number): string {
 const TAB_CSS = `
 .${CLS}-root {
   display: flex; flex-direction: column; gap: 8px;
-  height: 100%; min-height: 0; box-sizing: border-box;
+  /* The host is Zotero's <tab-content>, a flex-ROW XUL element: without an
+     explicit size the root is a content-sized flex item, so the page would
+     shrink to its own content width and re-flow on every card selection.
+     width/height cover non-flex hosts; flex covers flex hosts. */
+  flex: 1 1 auto;
+  width: 100%; height: 100%;
+  min-height: 0; min-width: 0;
+  box-sizing: border-box;
   padding: 8px 12px;
   font: inherit;
   color: var(--fill-primary, inherit);
@@ -307,20 +314,47 @@ export function openWordCardsTab(win: any): void {
       Zotero_Tabs.select(WORDCARDS_TAB_ID);
       return;
     }
-    const { id, container } = Zotero_Tabs.add({
-      id: WORDCARDS_TAB_ID,
-      type: WORDCARDS_TAB_ID,
-      // Zotero 10's _update() reads tab.data.icon on EVERY non-library tab
-      // with no undefined guard — data must be a defined object or add()
-      // throws mid-flight (observed on 10.0.3: "can't access property
-      // \"icon\", tab.data is undefined", leaving a container-less tab).
-      // Empty icon = a title-only entry in the tab bar.
-      data: { icon: "" },
-      title: getString("wordcards-tab-title"),
-      select: true,
-      onClose: () => destroyTab(),
-    });
-    void mountTab(win, id, container);
+    // Zotero_Tabs.add() appends the container, registers the tab, and only
+    // then selects it — anything throwing in between (Zotero's own _update or
+    // another plugin's tab observer) used to leave the tab registered but
+    // unselected, i.e. the user had to click the button a second time. Recover
+    // instead: resolve the container by id and select the tab ourselves.
+    let container: any = null;
+    try {
+      const added = Zotero_Tabs.add({
+        id: WORDCARDS_TAB_ID,
+        type: WORDCARDS_TAB_ID,
+        // Zotero 10's _update() reads tab.data.icon on EVERY non-library tab
+        // with no undefined guard — data must be a defined object or add()
+        // throws mid-flight (observed on 10.0.3: "can't access property
+        // \"icon\", tab.data is undefined", leaving a container-less tab).
+        // Empty icon = a title-only entry in the tab bar.
+        data: { icon: "" },
+        title: getString("wordcards-tab-title"),
+        select: true,
+        onClose: () => destroyTab(),
+      });
+      container = added?.container ?? null;
+    } catch (e) {
+      safeDebug(
+        "[Z-Transplit] wordCardsTab: add threw mid-flight (recovering): " + e,
+      );
+    }
+    if (!container) {
+      container = win?.document?.getElementById(WORDCARDS_TAB_ID) ?? null;
+    }
+    if (!container) {
+      safeDebug("[Z-Transplit] wordCardsTab: no tab container was created");
+      return;
+    }
+    try {
+      if (Zotero_Tabs.selectedID !== WORDCARDS_TAB_ID) {
+        Zotero_Tabs.select(WORDCARDS_TAB_ID);
+      }
+    } catch (e) {
+      safeDebug("[Z-Transplit] wordCardsTab: select failed: " + e);
+    }
+    void mountTab(win, WORDCARDS_TAB_ID, container);
   } catch (e) {
     safeDebug("[Z-Transplit] wordCardsTab: open failed: " + e);
   }
@@ -523,6 +557,26 @@ function render(state: WordCardsTabState): void {
   if (selected) state.detailEl.appendChild(buildDetail(state, selected));
 }
 
+/**
+ * Selection-only update for a tile click: toggle the tiles' highlight and
+ * rebuild just the detail column. Re-rendering the whole grid instead would
+ * destroy every tile (focus loss) and reset the grid's scroll position —
+ * the "page jumps when I pick a card" effect.
+ */
+function selectCard(state: WordCardsTabState, key: string): void {
+  state.selectedKey = key;
+  const tiles = state.gridEl.querySelectorAll(`.${CLS}-tile`);
+  for (const tile of tiles) {
+    tile.classList.toggle(
+      `${CLS}-tile-active`,
+      (tile as HTMLElement).getAttribute("data-key") === key,
+    );
+  }
+  clearChildren(state.detailEl);
+  const selected = state.records.find((r) => r.key === key);
+  if (selected) state.detailEl.appendChild(buildDetail(state, selected));
+}
+
 function buildEmpty(state: WordCardsTabState): HTMLElement {
   const box = el(state.doc, "div", `${CLS}-empty`);
   const icon = state.doc.createElementNS(
@@ -572,6 +626,7 @@ function buildTile(
   const tile = el(state.doc, "div", `${CLS}-tile`);
   tile.setAttribute("role", "button");
   tile.setAttribute("tabindex", "0");
+  tile.setAttribute("data-key", record.key);
   if (record.key === state.selectedKey) {
     tile.classList.add(`${CLS}-tile-active`);
   }
@@ -591,8 +646,7 @@ function buildTile(
   tile.appendChild(date);
 
   const select = () => {
-    state.selectedKey = record.key;
-    render(state);
+    selectCard(state, record.key);
   };
   tile.addEventListener("click", select);
   tile.addEventListener("keydown", (event) => {

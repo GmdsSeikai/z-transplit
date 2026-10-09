@@ -36,6 +36,9 @@ import { safeDebug } from "../../../utils/logger";
 import { toErrorMessage } from "../../../utils/error";
 import { alertDialog } from "../../../utils/dialog";
 import { createAbortController } from "../../../utils/abort";
+// 结构化的解析错误分类（reason 字段）——isJavaMissingCause 优先读它，
+// 避免对本地化/被重包装过的错误文本做正则猜测。纯 TS 类，无宿主依赖。
+import { PdfParseError } from "../PdfParseError";
 import { config } from "../../../../package.json";
 import {
   addTrackedListener,
@@ -537,7 +540,9 @@ export function unregisterSplitViewMenu(): void {
  * RUNNING JVM — see backendSelector's M-25 note) must not route the user to
  * the "install Java?" dialog. Mirrors the launch-failure patterns
  * backendSelector already classifies on, plus the wording PdfParseError and
- * JavaRuntimeManager emit.
+ * JavaRuntimeManager emit, and the shells those errors get wrapped in on the
+ * way out (err-java-unavailable's "Java 不可用/unavailable：…", checkHealth's
+ * "java -version failed" fallback, err-java-too-old's "需要 Java 11+").
  */
 const JAVA_MISSING_RE = new RegExp(
   [
@@ -547,6 +552,13 @@ const JAVA_MISSING_RE = new RegExp(
     "install\\s+java",
     "需要安装\\s*java",
     "需要安裝\\s*java",
+    // 版本过旧文案（err-java-too-old，zh-CN）："…但 OpenDataLoader 需要 Java 11+…"
+    // 只说"需要"，没有"安装"两个字——上面的模式全部漏掉它。
+    "需要\\s*java\\s*1[17]",
+    // 健康预检外壳（err-java-unavailable）："Java 不可用：…" / "Java unavailable: …"
+    "java[^\\n]{0,40}(?:不可用|無法使用|unavailable)",
+    // checkHealth 探测失败时返回的兜底错误串 "java -version failed"
+    "java\\s+-version\\s+failed",
     "jvm[^\\n]{0,40}not\\s+found",
   ].join("|"),
   "i",
@@ -623,12 +635,27 @@ export function isJavaMissingError(msg: string): boolean {
 }
 
 /**
+ * Whether a THROWN VALUE warrants offering the bundled-JRE install dialog.
+ *
+ * Prefers the structured PdfParseError.reason: the pipeline throws
+ * PdfParseError("java-missing") from the health preflight and from the runtime
+ * classifier, and that class pins the message to a fixed English hint while
+ * dropping the localized detail — so `reason` survives re-wrapping that
+ * message matching does not, and it can never be confused by a message that
+ * merely mentions java. The signature regex stays as the fallback for throws
+ * that never became PdfParseError (host exceptions, adapter-level Errors).
+ */
+export function isJavaMissingCause(e: unknown): boolean {
+  if (e instanceof PdfParseError) return e.reason === "java-missing";
+  return isJavaMissingError(toErrorMessage(e));
+}
+
+/**
  * Guide the user through downloading a bundled JRE when Java is missing.
  *
  * Flow: confirm dialog (下载安装 / 手动打开下载页 / 取消) → if download chosen,
- * run JavaRuntimeManager.downloadJRE with a ProgressWindow showing download +
- * extract progress → on success tell the user to retry the menu item. Returns
- * true if a JRE is now available (so the caller can hint at retry).
+ * run the shared progress-window install (installManagedJavaWithProgress).
+ * Returns true if a JRE is now available (so the caller can hint at retry).
  */
 export async function handleMissingJava(): Promise<boolean> {
   const Services = (globalThis as any).Services;
@@ -664,9 +691,38 @@ export async function handleMissingJava(): Promise<boolean> {
     return false;
   }
   if (choice !== 0) return false; // Cancel — no side effects at all
+  return installManagedJavaWithProgress();
+}
 
-  // Download + extract with progress.
-  const progress = new (Zotero as any).ProgressWindow({ window: win });
+/**
+ * Concurrent install requests share one in-flight run — downloadJRE()
+ * deduplicates the install itself, but without this latch a second click
+ * would also stack a second ProgressWindow on top of the first.
+ */
+let javaInstallUiInFlight: Promise<boolean> | null = null;
+
+/**
+ * Download + extract the managed JRE with a ProgressWindow — no confirm
+ * dialog. This is the programmatically callable half of handleMissingJava:
+ * the settings pane's 「安装 / 修复」 button reaches it through
+ * Zotero.ZTransplit.java.install, and the dialog flow funnels here too.
+ *
+ * Failure keeps its message visible in the progress window and opens the
+ * manual download page, so even a caller that ignores the return value leaves
+ * the user an actionable next step.
+ */
+export function installManagedJavaWithProgress(): Promise<boolean> {
+  if (javaInstallUiInFlight) return javaInstallUiInFlight;
+  javaInstallUiInFlight = runManagedJavaInstall().finally(() => {
+    javaInstallUiInFlight = null;
+  });
+  return javaInstallUiInFlight;
+}
+
+async function runManagedJavaInstall(): Promise<boolean> {
+  const progress = new (Zotero as any).ProgressWindow({
+    window: (Zotero as any).getMainWindow?.() || null,
+  });
   progress.changeHeadline(getString("java-progress-install"));
   progress.addDescription(getString("java-progress-download-prepare"));
   progress.show();
@@ -906,8 +962,10 @@ export function registerOpenDataLoaderMenu(): void {
               /* ignore */
             }
             // Special-case missing Java: offer to download a bundled JRE
-            // instead of a dead-end blocking alert.
-            if (isJavaMissingError(rawMsg)) {
+            // instead of a dead-end blocking alert. Structured reason first
+            // (isJavaMissingCause) — matching the message text alone misclassifies
+            // the localized preflight shell and JVM crash output.
+            if (isJavaMissingCause(e)) {
               await handleMissingJava();
               return;
             }

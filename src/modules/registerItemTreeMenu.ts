@@ -32,7 +32,7 @@ import {
 } from "../core/pdf/translation/opendataloaderSplitAdapter";
 import {
   friendlyOdlError,
-  isJavaMissingError,
+  isJavaMissingCause,
   handleMissingJava,
 } from "../core/pdf/splitview/splitViewFactory";
 import {
@@ -244,7 +244,10 @@ async function runPipeline(
     // "✗" line (the modal dialog below is the real carrier, this is backup).
     progress.startCloseTimer?.(10000);
     const raw = toErrorMessage(e);
-    if (isJavaMissingError(raw)) {
+    // Structured reason first (isJavaMissingCause) — the preflight error's
+    // message is a pinned English hint with the localized detail dropped, and
+    // shell-wrapped/JVM-crash texts defeat signature matching.
+    if (isJavaMissingCause(e)) {
       await handleMissingJava();
       return;
     }

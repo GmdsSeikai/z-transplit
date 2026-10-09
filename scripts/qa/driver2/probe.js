@@ -2086,6 +2086,153 @@ PROBE_CMDS.wordcards = async function (action) {
   return { error: "unknown wordcards sub-action: " + action };
 };
 
+// ── Word-cards layout & entry diagnostics ────────────────────────────────────
+//   "seed"         write fake card records to the on-disk store (must run in a
+//                  fresh process BEFORE anything loads the store index — the
+//                  addon caches the index in memory)
+//   "layout"       with the tab open: measure the layout chain (deck →
+//                  tab-content → root → body/grid/detail), then click a tile
+//                  and re-measure — a root-width change is the "jump"
+//   "reader-click" with a reader tab open: synthesize one click on the reader
+//                  toolbar word-cards button and report whether the tab got
+//                  created AND selected (the two-click check)
+PROBE_CMDS.wc = async function (action) {
+  const { win, Zotero_Tabs } = probeWin();
+  const doc = win.document;
+  const rectOf = (el) => {
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    return {
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+    };
+  };
+  const host = () => doc.getElementById("ztransplit-wordcards");
+  const root = () => host()?.querySelector(".ztransplit-wc-root");
+
+  if (action === "seed" || !action) {
+    try {
+      const words = [
+        ["resonance", "/ˈrezənəns/", "the quality in a sound of being deep and long; the ability to evoke associations"],
+        ["epistemology", "/ɪˌpɪstəˈmɒlədʒi/", "the branch of philosophy that deals with knowledge, its methods, validity and scope"],
+        ["quantum", "/ˈkwɒntəm/", "the smallest discrete quantity of a physical property such as energy or light"],
+        ["ostensibly", "/ɒˈstensəbli/", "apparently, but perhaps not in fact; appearing to be true though it may not be"],
+        ["paradigm", "/ˈpærədaɪm/", "a typical pattern or model of something; a worldview underlying the theories of a discipline"],
+        ["synthesis", "/ˈsɪnθəsɪs/", "the combination of separate elements into a single, coherent whole"],
+        ["amplitude", "/ˈæmplɪtjuːd/", "the maximum extent of a vibration or oscillation, measured from the position of equilibrium"],
+        ["hypothesis", "/haɪˈpɒθəsɪs/", "a supposition made as a starting point for further investigation from known facts"],
+      ];
+      const enc = new TextEncoder();
+      let written = 0;
+      for (const [word, phonetic, meaning] of words) {
+        const normalized = word.toLowerCase().replace(/['’]/g, "'");
+        const digest = await crypto.subtle.digest(
+          "SHA-1",
+          enc.encode(`1|${normalized}`),
+        );
+        const key = Array.from(new Uint8Array(digest))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+        const now = Date.now() - written * 86400000;
+        const record = {
+          v: 1,
+          key,
+          word,
+          createdAt: now,
+          updatedAt: now,
+          lookups: 1,
+          latest: { word, phonetic, senses: [{ pos: "n.", meaning }], source: "youdao" },
+          history: [{ at: now, targetLang: "zh-CN", content: { word, phonetic, senses: [{ pos: "n.", meaning }], source: "youdao" } }],
+        };
+        const path = PathUtils.join(
+          Zotero.DataDirectory.dir,
+          "ztransplit",
+          "word-cards",
+          "v1",
+          key.slice(0, 2),
+          `${key}.json`,
+        );
+        const bucket = path.slice(0, Math.max(path.lastIndexOf("\\"), path.lastIndexOf("/")));
+        await IOUtils.makeDirectory(bucket, { createDirs: true, ignoreExisting: true });
+        await IOUtils.write(path, enc.encode(JSON.stringify(record)));
+        written++;
+      }
+      return { ok: true, written, dir: PathUtils.join(Zotero.DataDirectory.dir, "ztransplit", "word-cards", "v1") };
+    } catch (e) {
+      return { ok: false, error: String(e) };
+    }
+  }
+
+  if (action === "layout") {
+    if (!root()) {
+      return { error: "word-cards tab not open", tabs: Zotero_Tabs._tabs.map((t) => t.type) };
+    }
+    const grid = host().querySelector(".ztransplit-wc-grid");
+    const body = host().querySelector(".ztransplit-wc-body");
+    const detail = host().querySelector(".ztransplit-wc-detail");
+    const tiles = Array.from(host().querySelectorAll(".ztransplit-wc-tile"));
+    const out = {
+      win: { w: win.innerWidth, h: win.innerHeight },
+      deck: rectOf(doc.getElementById("tabs-deck")),
+      tabContent: rectOf(host()),
+      root: rectOf(root()),
+      bar: rectOf(host().querySelector(".ztransplit-wc-bar")),
+      body: rectOf(body),
+      grid: rectOf(grid),
+      detail: rectOf(detail),
+      tileCount: tiles.length,
+      gridScrollBefore: grid.scrollTop,
+    };
+    if (tiles.length) {
+      const target = tiles[Math.min(3, tiles.length - 1)];
+      out.clickedTileWord = target.querySelector(".ztransplit-wc-tile-word")?.textContent;
+      target.click();
+      await Zotero.Promise.delay(400);
+      out.afterClick = {
+        root: rectOf(root()),
+        gridScrollAfter: grid.scrollTop,
+        detailText: (detail?.textContent || "").slice(0, 120),
+        detailW: rectOf(detail)?.w,
+      };
+    }
+    return out;
+  }
+
+  if (action === "reader-click") {
+    const reader =
+      Zotero.Reader.getByTabID(Zotero_Tabs.selectedID) ||
+      Zotero.Reader._readers?.[0];
+    const rdoc = reader?._iframeWindow?.document;
+    const btn = rdoc?.querySelector(".ztransplit-wc-reader-btn");
+    const before = {
+      readerFound: !!reader,
+      buttonFound: !!btn,
+      selectedID: Zotero_Tabs.selectedID,
+      wordcardsTabExisted: !!Zotero_Tabs._getTab?.("ztransplit-wordcards")?.tab,
+    };
+    if (!btn) return { before, error: "reader button not found" };
+    btn.click();
+    await Zotero.Promise.delay(2500);
+    const tab = Zotero_Tabs._getTab?.("ztransplit-wordcards")?.tab;
+    const deck = doc.getElementById("tabs-deck");
+    return {
+      before,
+      after: {
+        tabExists: !!tab,
+        tabSelected: Zotero_Tabs.selectedID === "ztransplit-wordcards",
+        deckSelectedIndex: deck?.selectedIndex,
+        deckChildIds: deck ? Array.from(deck.children).map((c) => c.id) : null,
+        rootPresent: !!root(),
+        root: rectOf(root()),
+      },
+    };
+  }
+
+  return { error: "unknown wc sub-action: " + action };
+};
+
 // ── README screenshot staging ───────────────────────────────────────────────
 // Commands that stage the exact UI states the README screenshots show and
 // capture them. They drive the real addon through the real user paths; the

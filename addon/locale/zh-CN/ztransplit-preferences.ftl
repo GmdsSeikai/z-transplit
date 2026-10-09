@@ -222,7 +222,29 @@ preferences-ztransplit-pdf-java-desc =
     保留排版的 PDF 翻译需要 Java 11 或更高版本来解析 PDF 内容。没有安装 Java
     时该功能不可用：在阅读器中右键点击 PDF，选择「翻译并分屏」时会自动检测，
     未检测到会弹窗引导下载安装便携版 Java（约 40MB，解压到数据目录，无需
-    管理员权限），安装完成后再次点击该菜单即可。
+    管理员权限），安装完成后再次点击该菜单即可。也可以用下面的「安装 /
+    修复…」随时主动安装或重装。
+
+preferences-ztransplit-pdf-java-check =
+    .label = 检测状态
+preferences-ztransplit-pdf-java-install =
+    .label = 安装 / 修复…
+preferences-ztransplit-pdf-java-installing =
+    .label = 正在安装…
+preferences-ztransplit-pdf-java-status-checking =
+    正在检测 Java 运行库…
+preferences-ztransplit-pdf-java-status-installing =
+    正在下载并安装 Java 运行库，进度显示在 Zotero 主窗口。完成后此处会自动刷新状态。
+preferences-ztransplit-pdf-java-status-ready-managed =
+    Java 运行库可用：{ $version }（插件管理的便携版，位于数据目录）。
+preferences-ztransplit-pdf-java-status-ready-system =
+    Java 运行库可用：{ $version }（系统安装）。
+preferences-ztransplit-pdf-java-status-missing =
+    未检测到可用的 Java 运行库。点「安装 / 修复…」自动下载便携版（约 45MB，安装到数据目录，无需管理员权限）。
+preferences-ztransplit-pdf-java-status-error =
+    检测失败：{ $detail }
+preferences-ztransplit-pdf-java-status-nobundle =
+    插件主包未加载，无法检测或安装。请重启 Zotero；仍未恢复时请重新安装本插件。
 
 preferences-ztransplit-pdf-fonts-title =
     .value = 字体覆盖目录

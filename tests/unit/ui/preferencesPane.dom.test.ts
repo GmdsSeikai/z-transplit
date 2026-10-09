@@ -488,3 +488,125 @@ describe("B17 设置 pane：PDF 字体覆盖目录回显", () => {
     h.dom.window.close();
   });
 });
+
+// ── Java 运行库：状态检测 + 安装/修复按钮 ─────────────────────────────────
+//
+// 修复「一次 Java 安装失败后全插件无入口可用」时加入的主动入口。面板通过
+// Zotero.ZTransplit.java（主包暴露）检测与安装；这里用桩验证回显与按钮态。
+
+type JavaStatusStub = {
+  ready: boolean;
+  version?: string;
+  managed?: boolean;
+  error?: string;
+};
+
+interface JavaHarness extends Harness {
+  /** Click a Java button and wait out the promise chain preferences.js runs. */
+  clickJava(id: string): Promise<void>;
+}
+
+function setupJavaHarness(java?: {
+  getStatus?: () => JavaStatusStub | Promise<JavaStatusStub>;
+  install?: () => Promise<boolean>;
+}): JavaHarness {
+  const h = setupHarness({});
+  const zt = (h.window as any).Zotero;
+  zt.ZTransplit = java ? { java } : undefined;
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return {
+    ...h,
+    async clickJava(id: string) {
+      const btn = h.doc.getElementById(id);
+      if (!btn) throw new Error(`element #${id} not found`);
+      btn.dispatchEvent(new h.window.Event("command", { bubbles: true }));
+      // 覆盖 onJavaInstall 的安装 await + 刷新 await 两层链。
+      await flush();
+      await flush();
+    },
+  };
+}
+
+describe("B17 设置 pane：Java 运行库状态行与按钮", () => {
+  it("主包未挂载：点击检测显示引导文案，不抛错", async () => {
+    const h = setupJavaHarness(undefined);
+    await h.clickJava("ztransplit-pref-pdf-java-check");
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("插件主包未加载");
+    h.dom.window.close();
+  });
+
+  it("ready + managed：显示版本与「插件管理」标注", async () => {
+    const h = setupJavaHarness({
+      getStatus: async () => ({
+        ready: true,
+        version: "17.0.12",
+        managed: true,
+      }),
+    });
+    await h.clickJava("ztransplit-pref-pdf-java-check");
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("17.0.12");
+    expect(String(status.textContent)).toContain("插件管理");
+    h.dom.window.close();
+  });
+
+  it("ready + 系统 Java：标注为系统安装", async () => {
+    const h = setupJavaHarness({
+      getStatus: async () => ({ ready: true, version: "21.0.1", managed: false }),
+    });
+    await h.clickJava("ztransplit-pref-pdf-java-check");
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("21.0.1");
+    expect(String(status.textContent)).toContain("系统安装");
+    h.dom.window.close();
+  });
+
+  it("未就绪：显示缺失引导（错误详情不上墙，界面保持双语）", async () => {
+    const h = setupJavaHarness({
+      getStatus: async () => ({
+        ready: false,
+        error: "Java runtime not found. Please install Java 11+ …",
+      }),
+    });
+    await h.clickJava("ztransplit-pref-pdf-java-check");
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("未检测到");
+    expect(String(status.textContent)).not.toContain("Please install");
+    h.dom.window.close();
+  });
+
+  it("安装：点击后按钮禁用并切到「正在安装」，完成后恢复并刷新为可用状态", async () => {
+    let installed = false;
+    const h = setupJavaHarness({
+      getStatus: async () =>
+        installed
+          ? { ready: true, version: "17.0.12", managed: true }
+          : { ready: false },
+      install: async () => {
+        installed = true;
+        return true;
+      },
+    });
+    const installBtn = h.doc.getElementById("ztransplit-pref-pdf-java-install")!;
+    await h.clickJava("ztransplit-pref-pdf-java-install");
+    expect(installed).toBe(true);
+    expect(installBtn.hasAttribute("disabled")).toBe(false);
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("17.0.12");
+    h.dom.window.close();
+  });
+
+  it("安装失败（resolve false）：恢复按钮，状态行回到缺失引导", async () => {
+    const h = setupJavaHarness({
+      getStatus: async () => ({ ready: false }),
+      install: async () => false,
+    });
+    const installBtn = h.doc.getElementById("ztransplit-pref-pdf-java-install")!;
+    await h.clickJava("ztransplit-pref-pdf-java-install");
+    expect(installBtn.hasAttribute("disabled")).toBe(false);
+    const status = h.doc.getElementById("ztransplit-pref-pdf-java-status")!;
+    expect(String(status.textContent)).toContain("未检测到");
+    h.dom.window.close();
+  });
+});

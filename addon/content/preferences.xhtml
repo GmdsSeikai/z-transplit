@@ -661,7 +661,26 @@
         <description
           class="ztransplit-desc"
           data-l10n-id="preferences-ztransplit-pdf-java-desc"
-        >保留排版的 PDF 翻译需要 Java 11 或更高版本来解析 PDF 内容。没有安装 Java 时该功能不可用：在阅读器中右键点击 PDF，选择「翻译并分屏」时会自动检测，未检测到会弹窗引导下载安装便携版 Java（约 40MB，解压到数据目录，无需管理员权限），安装完成后再次点击该菜单即可。</description>
+        >保留排版的 PDF 翻译需要 Java 11 或更高版本来解析 PDF 内容。没有安装 Java 时该功能不可用：在阅读器中右键点击 PDF，选择「翻译并分屏」时会自动检测，未检测到会弹窗引导下载安装便携版 Java（约 40MB，解压到数据目录，无需管理员权限），安装完成后再次点击该菜单即可。也可以在下面的「安装 / 修复…」主动安装或重装。</description>
+        <hbox class="ztransplit-row" align="center">
+          <button
+            id="ztransplit-pref-pdf-java-check"
+            data-l10n-id="preferences-ztransplit-pdf-java-check"
+            label="检测状态"
+          />
+          <button
+            id="ztransplit-pref-pdf-java-install"
+            data-l10n-id="preferences-ztransplit-pdf-java-install"
+            label="安装 / 修复…"
+          />
+        </hbox>
+        <!-- 检测 / 安装结果回显。检测会启动一次 java 进程（可能数秒），只在
+             点击按钮时执行，面板加载不自动探测。文案由 preferences.js 从
+             下面的隐藏节点搬运。 -->
+        <description
+          id="ztransplit-pref-pdf-java-status"
+          class="ztransplit-desc"
+        ></description>
       </vbox>
 
       <label
@@ -900,5 +919,40 @@
       id="ztransplit-pref-string-ai-prompt-unbalanced-braces"
       data-l10n-id="preferences-ztransplit-ai-prompt-error-unbalanced-braces"
     >模板的花括号不成对：占位符写成双花括号（{{text}}），公式标记写成单花括号（{v0}）。</label>
+    <!-- Java 运行库状态行与按钮的动态文案。版本/错误详情占位符由
+         preferences.js 填充：本地化值里写 Fluent 变量（{ $version }），静态
+         回退正文里写 {version}，脚本对两种写法都做替换。 -->
+    <label
+      id="ztransplit-pref-string-java-btn-installing"
+      data-l10n-id="preferences-ztransplit-pdf-java-installing"
+    >正在安装…</label>
+    <label
+      id="ztransplit-pref-string-java-status-checking"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-checking"
+    >正在检测 Java 运行库…</label>
+    <label
+      id="ztransplit-pref-string-java-status-installing"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-installing"
+    >正在下载并安装 Java 运行库，进度显示在 Zotero 主窗口。完成后此处会自动刷新状态。</label>
+    <label
+      id="ztransplit-pref-string-java-status-ready-managed"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-ready-managed"
+    >Java 运行库可用：{version}（插件管理的便携版，位于数据目录）。</label>
+    <label
+      id="ztransplit-pref-string-java-status-ready-system"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-ready-system"
+    >Java 运行库可用：{version}（系统安装）。</label>
+    <label
+      id="ztransplit-pref-string-java-status-missing"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-missing"
+    >未检测到可用的 Java 运行库。点「安装 / 修复…」自动下载便携版（约 45MB，安装到数据目录，无需管理员权限）。</label>
+    <label
+      id="ztransplit-pref-string-java-status-error"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-error"
+    >检测失败：{detail}</label>
+    <label
+      id="ztransplit-pref-string-java-status-nobundle"
+      data-l10n-id="preferences-ztransplit-pdf-java-status-nobundle"
+    >插件主包未加载，无法检测或安装。请重启 Zotero；仍未恢复时请重新安装本插件。</label>
   </vbox>
 </vbox>

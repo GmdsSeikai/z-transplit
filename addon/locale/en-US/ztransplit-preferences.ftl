@@ -255,7 +255,35 @@ preferences-ztransplit-pdf-java-desc =
     automatically, and when Java is missing a dialog walks you through
     installing a portable runtime (about 40MB, unpacked into the data
     directory, no administrator rights needed). Click the menu again once it is
-    installed.
+    installed. "Install / repair…" below also installs or reinstalls on
+    demand, at any time.
+
+preferences-ztransplit-pdf-java-check =
+    .label = Check status
+preferences-ztransplit-pdf-java-install =
+    .label = Install / repair…
+preferences-ztransplit-pdf-java-installing =
+    .label = Installing…
+preferences-ztransplit-pdf-java-status-checking =
+    Checking the Java runtime…
+preferences-ztransplit-pdf-java-status-installing =
+    Downloading and installing the Java runtime; progress is shown in the
+    Zotero main window. This status refreshes automatically when it finishes.
+preferences-ztransplit-pdf-java-status-ready-managed =
+    Java runtime available: { $version } (portable runtime managed by the
+    plugin, inside the data directory).
+preferences-ztransplit-pdf-java-status-ready-system =
+    Java runtime available: { $version } (system installation).
+preferences-ztransplit-pdf-java-status-missing =
+    No usable Java runtime was detected. Click "Install / repair…" to download
+    the portable runtime automatically (about 45MB, installed into the data
+    directory, no administrator rights needed).
+preferences-ztransplit-pdf-java-status-error =
+    The check failed: { $detail }
+preferences-ztransplit-pdf-java-status-nobundle =
+    The plugin main bundle is not loaded, so the runtime cannot be checked or
+    installed here. Restart Zotero; if it still does not recover, reinstall
+    the plugin.
 
 preferences-ztransplit-pdf-fonts-title =
     .value = Font override directory

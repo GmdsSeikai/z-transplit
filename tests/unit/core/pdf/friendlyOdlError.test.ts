@@ -1,11 +1,14 @@
 /**
- * friendlyOdlError / isJavaMissingError — 用户可见的错误分类契约。
+ * friendlyOdlError / isJavaMissingError / isJavaMissingCause — 用户可见的
+ * 错误分类契约。
  *
  * 关键行为：
  *   - HTTP 状态码优先：401/403 → 密钥文案、429 → 配额文案、其余 → 状态码
  *     加响应摘要，不再透出原始英文；
  *   - Java 判定基于启动失败签名，而非裸 "java" 子串 —— java.lang.* 堆栈、
- *     含 "javascript" 的 URL 等不得误入「需要安装 Java」分支。
+ *     含 "javascript" 的 URL 等不得误入「需要安装 Java」分支；
+ *   - isJavaMissingCause 优先读 PdfParseError.reason（结构化），消息文本只
+ *     作回退——管道错误在传播中被外壳包装 / 本地化替换，文本匹配会漏。
  *
  * vitest 环境无 Localization，getString 返回 `ztransplit-<key>` 本身，
  * 断言按 key 前缀进行。
@@ -14,7 +17,9 @@ import { describe, it, expect } from "vitest";
 import {
   friendlyOdlError,
   isJavaMissingError,
+  isJavaMissingCause,
 } from "../../../../src/core/pdf/splitview/splitViewFactory";
+import { PdfParseError } from "../../../../src/core/pdf/PdfParseError";
 
 const KEY = (id: string) => `ztransplit-${id}`;
 
@@ -66,6 +71,55 @@ describe("friendlyOdlError / isJavaMissingError — Java 启动失败签名", ()
   ];
   it.each(notMissing)("不误判为缺 Java：%s", (msg) => {
     expect(isJavaMissingError(msg)).toBe(false);
+  });
+
+  // 修复「一次安装失败后弹窗再也不出现」时补上的漏网文案：这些错误此前
+  // 不匹配任何签名，catch 里只弹普通错误框，用户失去唯一的安装入口。
+  const previouslyMissed = [
+    // err-java-too-old（zh-CN）：只说"需要 Java 11+"，没有"安装"
+    "检测到 Java 8，但 OpenDataLoader 需要 Java 11+。请从 https://adoptium.net 安装较新版本。",
+    // 健康预检外壳（err-java-unavailable）
+    "Java 不可用：java -version failed",
+    "Java unavailable: Error occurred during initialization of VM",
+    // checkHealth 探测失败的兜底串
+    "java -version failed",
+  ];
+  it.each(previouslyMissed)("修复后可识别为缺 Java：%s", (msg) => {
+    expect(isJavaMissingError(msg)).toBe(true);
+    expect(friendlyOdlError(msg)).toBe(KEY("odl-error-java-missing"));
+  });
+
+  it("新签名不误伤运行时 JVM 堆栈与 java 子串 URL", () => {
+    for (const msg of notMissing) {
+      expect(isJavaMissingError(msg)).toBe(false);
+    }
+  });
+});
+
+describe("isJavaMissingCause — 结构化 reason 优先，文本签名回退", () => {
+  it("PdfParseError(java-missing) 判真，即使消息被改写成不匹配的文本", () => {
+    const e = new PdfParseError("java-missing", "Java 不可用：任意细节");
+    e.message = "被上游重包装过的任意文本";
+    expect(isJavaMissingCause(e)).toBe(true);
+  });
+
+  it.each(["timeout", "parse-failed", "jar-missing", "no-text"] as const)(
+    "PdfParseError(%s) 判假",
+    (reason) => {
+      expect(isJavaMissingCause(new PdfParseError(reason))).toBe(false);
+    },
+  );
+
+  it("非 PdfParseError 回退到消息签名匹配", () => {
+    expect(isJavaMissingCause(new Error("需要安装 Java 11+"))).toBe(true);
+    expect(isJavaMissingCause(new Error("Java 不可用：java -version failed"))).toBe(
+      true,
+    );
+    expect(isJavaMissingCause(new Error("java.lang.NullPointerException"))).toBe(
+      false,
+    );
+    expect(isJavaMissingCause("java executable not found")).toBe(true);
+    expect(isJavaMissingCause(undefined)).toBe(false);
   });
 });
 

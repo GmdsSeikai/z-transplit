@@ -588,6 +588,194 @@
     }
   }
 
+  // ── Java 运行库：状态检测 + 安装/修复 ───────────────────────────────────
+  // 检测与安装都走主包暴露的 Zotero.ZTransplit.java（面板脚本运行在独立
+  // 沙箱里，无法 import 主包模块——与 REGION_PROFILES 镜像同一约束）。主包
+  // 未加载（bundle 失败 / 插件刚重载）时只提示，不把面板搞成假失败。
+  // 检测会 spawn 一次 `java -version` 进程（可能数秒），所以只在点击按钮时
+  // 执行；面板加载与面板显示都不自动探测，避免打开设置时卡顿。
+
+  var javaStrings = {};
+  /** 「安装 / 修复」按钮的原始 label，安装中态结束后恢复。 */
+  var javaInstallLabelBase = "";
+  var javaCheckInFlight = false;
+  var javaInstallInFlight = false;
+
+  function javaApi() {
+    try {
+      var zt = Zotero && Zotero.ZTransplit;
+      var api = zt && zt.java;
+      // 检测与安装按需可用：主包只暴露了其中一半时，另一半单独降级。
+      if (
+        api &&
+        (typeof api.getStatus === "function" ||
+          typeof api.install === "function")
+      ) {
+        return api;
+      }
+    } catch (e) {
+      /* 主包未挂载 */
+    }
+    return null;
+  }
+
+  function javaString(id) {
+    var node = $(id);
+    return node && node.textContent ? String(node.textContent).trim() : "";
+  }
+
+  function setJavaStatusText(text) {
+    if (els.javaStatus) els.javaStatus.textContent = text;
+  }
+
+  function setJavaButtonsDisabled(disabled) {
+    [els.javaCheckBtn, els.javaInstallBtn].forEach(function (btn) {
+      if (!btn) return;
+      try {
+        if (disabled) btn.setAttribute("disabled", "true");
+        else btn.removeAttribute("disabled");
+      } catch (e) {
+        /* 忽略 */
+      }
+    });
+  }
+
+  function setJavaInstallLabel(installing) {
+    if (!els.javaInstallBtn) return;
+    var label = installing ? javaStrings.btnInstalling : javaInstallLabelBase;
+    if (label) {
+      try {
+        els.javaInstallBtn.setAttribute("label", label);
+      } catch (e) {
+        /* 忽略 */
+      }
+    }
+  }
+
+  /**
+   * 占位符填充。本地化值（Fluent）里写 { $version }，静态回退正文里写
+   * {version}，这里对两种写法都替换，文案作者两种都安全。
+   */
+  function fillJavaTemplate(text, vars) {
+    var out = String(text || "");
+    Object.keys(vars || {}).forEach(function (key) {
+      var value = String(vars[key]);
+      out = out.split("{" + key + "}").join(value);
+      out = out.split("{ $" + key + " }").join(value);
+      out = out.split("{$" + key + "}").join(value);
+    });
+    return out;
+  }
+
+  /** 读取 getStatus() 的结果并回显到状态行。 */
+  function refreshJavaStatus() {
+    var api = javaApi();
+    if (!api || typeof api.getStatus !== "function") {
+      setJavaStatusText(javaStrings.nobundle);
+      return Promise.resolve();
+    }
+    setJavaStatusText(javaStrings.checking);
+    return Promise.resolve()
+      .then(function () {
+        return api.getStatus();
+      })
+      .then(function (status) {
+        if (status && status.ready) {
+          setJavaStatusText(
+            fillJavaTemplate(
+              status.managed ? javaStrings.readyManaged : javaStrings.readySystem,
+              { version: (status && status.version) || "?" },
+            ),
+          );
+        } else {
+          // 探测失败的原因串多为英文 JVM 输出，不上墙；通用文案引导下一步。
+          setJavaStatusText(javaStrings.missing);
+        }
+      })
+      .catch(function (e) {
+        setJavaStatusText(
+          fillJavaTemplate(javaStrings.statusError, {
+            detail: String((e && e.message) || e),
+          }),
+        );
+      });
+  }
+
+  function onJavaCheck() {
+    if (javaCheckInFlight) return;
+    javaCheckInFlight = true;
+    var done = function () {
+      javaCheckInFlight = false;
+    };
+    refreshJavaStatus().then(done, done);
+  }
+
+  function onJavaInstall() {
+    if (javaInstallInFlight) return;
+    var api = javaApi();
+    if (!api || typeof api.install !== "function") {
+      setJavaStatusText(javaStrings.nobundle);
+      return;
+    }
+    javaInstallInFlight = true;
+    setJavaButtonsDisabled(true);
+    setJavaInstallLabel(true);
+    setJavaStatusText(javaStrings.statusInstalling);
+    // 安装在主包内执行（ProgressWindow 显示在主窗口）；无论成败这里都恢复
+    // 按钮并重新检测，失败时状态行回到「未检测到」引导重试，主窗口另有无
+    // 障碍的失败说明与手动下载页。
+    Promise.resolve()
+      .then(function () {
+        return api.install();
+      })
+      .catch(function (e) {
+        try {
+          Zotero.debug(
+            "[Z-Transplit] preferences: java install failed: " + e,
+          );
+        } catch (e2) {
+          /* 忽略 */
+        }
+        return false;
+      })
+      .then(function () {
+        javaInstallInFlight = false;
+        setJavaButtonsDisabled(false);
+        setJavaInstallLabel(false);
+        return refreshJavaStatus();
+      });
+  }
+
+  function cacheJavaStrings() {
+    javaStrings.btnInstalling = javaString(
+      "ztransplit-pref-string-java-btn-installing",
+    );
+    javaStrings.checking = javaString(
+      "ztransplit-pref-string-java-status-checking",
+    );
+    javaStrings.statusInstalling = javaString(
+      "ztransplit-pref-string-java-status-installing",
+    );
+    javaStrings.readyManaged = javaString(
+      "ztransplit-pref-string-java-status-ready-managed",
+    );
+    javaStrings.readySystem = javaString(
+      "ztransplit-pref-string-java-status-ready-system",
+    );
+    javaStrings.missing = javaString(
+      "ztransplit-pref-string-java-status-missing",
+    );
+    javaStrings.statusError = javaString(
+      "ztransplit-pref-string-java-status-error",
+    );
+    javaStrings.nobundle = javaString(
+      "ztransplit-pref-string-java-status-nobundle",
+    );
+    javaInstallLabelBase = els.javaInstallBtn
+      ? els.javaInstallBtn.getAttribute("label") || ""
+      : "";
+  }
+
   // ── 入口 ────────────────────────────────────────────────────────────────
 
   function cacheElements() {
@@ -603,6 +791,9 @@
     els.pdfTranslateItem = $("ztransplit-pref-engine-item-pdftranslate");
     els.aiPromptInput = $("ztransplit-pref-ai-prompt");
     els.aiPromptError = $("ztransplit-pref-ai-prompt-error");
+    els.javaCheckBtn = $("ztransplit-pref-pdf-java-check");
+    els.javaInstallBtn = $("ztransplit-pref-pdf-java-install");
+    els.javaStatus = $("ztransplit-pref-pdf-java-status");
 
     // Zotero 在派发 load 之前已经跑完 document.l10n.translateFragment()，
     // 所以这里读到的 label / textContent 已经是本地化后的文案。
@@ -653,6 +844,13 @@
       els.regionList.addEventListener("select", onRegionPicked);
       els.regionList.addEventListener("command", onRegionPicked);
     }
+    if (els.javaCheckBtn) {
+      // XUL button 的激活事件是 command。
+      els.javaCheckBtn.addEventListener("command", onJavaCheck);
+    }
+    if (els.javaInstallBtn) {
+      els.javaInstallBtn.addEventListener("command", onJavaInstall);
+    }
     // 面板每次显示时重新探测：用户可能开着设置窗口去装了 zotero-pdf-translate。
     var root = $("zotero-prefpane-ztransplit");
     if (root) root.addEventListener("showing", syncPDFTranslateStatus);
@@ -690,6 +888,8 @@
 
       syncEngineFields();
       syncPDFTranslateStatus();
+
+      cacheJavaStrings();
 
       var path = $("ztransplit-pref-pdf-fonts-path");
       if (path) path.textContent = assetsDir();
