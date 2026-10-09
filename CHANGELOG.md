@@ -3,6 +3,76 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.5.0] - 2026-10-09
+
+### Added
+
+- Live selection sync in the reader translate pane. Zotero's official
+  「renderTextSelectionPopup」 reader event (one shared listener per process,
+  fanned out to panes by item identity) re-reads the selection about 250 ms
+  after the user completes a selection, so the pane follows the mouse without
+  a manual 「Refresh selection」 click. A re-fire for an unchanged selection is
+  a no-op — no duplicate requests, no copy-state resets.
+- An 「Auto translate」 checkbox in the pane's language bar, bound to the
+  existing `translate.auto` preference. Turning it on translates the pending
+  selection immediately; combined with live sync, a selection produces a
+  translation with zero clicks.
+- Every bilingual / read-aloud control is now a button. The presentation mode
+  (上下对照 interleave / 仅译文 translation-only) moved from a dropdown to a
+  pair of buttons whose active highlight is synced with the session's actual
+  mode; the bilingual toggle, mode buttons, and read-aloud buttons share one
+  style, with active states in the brand crimson `#b5343a` — same family as
+  the pane's primary action and the word-card chips.
+- Brand-colored reader-pane icons. The translate section's header and sidenav
+  icons adopt a 文/A swap motif in the logo's palette (ink = source, crimson =
+  translation), replacing the single-color outline glyphs. Zotero switches
+  between light and dark variants via `registerSection`'s `darkIcon`, so the
+  icons no longer rely on `currentColor`. The QA S7 rule accepts an
+  explicitly colored UI icon when a paired `-dark.svg` companion exists.
+- A Java runtime install/repair entry point in the settings pane (PDF
+  split-screen translation → Java runtime): a status line shows the detected
+  state (plugin-managed portable runtime with version, system Java, or not
+  found), and 「Install / repair…」 runs the same progress-window install as
+  the missing-Java dialog — reachable at any time, without having to fail a
+  translation first. The pane talks to the plugin main bundle through a new
+  `Zotero.ZTransplit.java` surface (`getStatus` / `install`); when the bundle
+  is not loaded the pane says so instead of failing silently.
+
+### Fixed
+
+- The reader translate pane no longer collapses when the sidebar is dragged
+  narrow. The pane (and the bilingual control bar) keep a readable minimum
+  width (~248 px); below that the item pane's scroll container shows a
+  horizontal scrollbar instead of squeezing the right-hand controls out of
+  view, and the language bar wraps.
+- The Word Cards tab now fills its container and no longer reflows when a
+  card is selected. The tab root is a child of Zotero's `<tab-content>`, a
+  flex-row XUL element, so as a plain flex item it was content-sized — on a
+  2560 px window the page measured ~1030 px and hugged the left edge, and
+  every tile click re-measured the (different) detail content and resized the
+  whole page. The root now takes `flex: 1 1 auto; width: 100%`, and selecting
+  a card only toggles the tiles' highlight and rebuilds the detail column —
+  the grid keeps its DOM, so focus and scroll position survive the click
+  (verified on a real Zotero 10.0.3: root 1032→2560 px on open, unchanged on
+  selection).
+- Opening the Word Cards tab recovers from a failed `Zotero_Tabs.add()`.
+  Zotero's add() appends the container and registers the tab before it
+  selects it, so anything throwing in between (its own `_update` icon read or
+  another plugin's tab observer) left the tab registered but unselected —
+  the first click appeared dead and only the second one got in. The open
+  path now resolves the container by id and selects the tab itself whenever
+  add() did not complete, so a single click always lands on the page.
+
+- The "missing Java → offer install" classification no longer misses real
+  failures. The two pipeline catch sites now consult the structured
+  `PdfParseError.reason` first (`isJavaMissingCause`) instead of regex-matching
+  the message text, and the signature table adds the shells such errors
+  actually arrive in: the health-preflight shell ("Java 不可用：…" /
+  "Java unavailable: …"), the `java -version failed` fallback, and the zh-CN
+  too-old wording ("…需要 Java 11+"). Previously a failed install that left a
+  broken managed runtime could route every later attempt to a generic error —
+  the install dialog never reappeared and no manual entry point existed.
+
 ## [1.4.0] - 2026-10-04
 
 ### Added
@@ -70,6 +140,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 1.2.0 predate this changelog and are not backfilled.
 
+[1.5.0]: https://github.com/Liozhang/z-transplit/compare/v1.4.0...v1.5.0
 [1.4.0]: https://github.com/Liozhang/z-transplit/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/Liozhang/z-transplit/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/Liozhang/z-transplit/compare/v1.1.0...v1.2.0
