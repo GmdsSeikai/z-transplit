@@ -16,13 +16,24 @@
  *     `debug` from src/utils/logger.ts;
  *   - every [Leadero ODL] / [Leadero] prefix and the leadero-odl-* temp-file
  *     prefix are renamed;
- *   - the addon-ID fallback is z-transplit's own.
+ *   - the addon-ID fallback is z-transplit's own;
+ *   - packed-XPI installs: Zotero keeps plugins as a packed .xpi (rootURI is
+ *     a jar: URI), so the bundled jars are inside a zip and `java -jar` can
+ *     never find them on disk. getJarPath() extracts them to
+ *     {DataDir}/ztransplit/lib/ on first use (SHA-256-checked against the
+ *     shipped PROVENANCE*.json) — see extractJarFromPackedXpi.
  * Host-coupled (nsIProcess / nsIFile / Zotero.getTempDirectory) — not
  * unit-testable in Node.
  */
 
 import { getPref } from "../../utils/prefs";
 import { getCachedManagedJavaExe } from "./JavaRuntimeManager";
+import { sha256Hex } from "../../utils/hash";
+import {
+  downloadPinnedJar,
+  type DownloadProgress,
+  type PinnedJarMeta,
+} from "./OdlJarDownloader";
 import { Semaphore } from "../../utils/Semaphore";
 // `debug` is the dev-build-gated channel (see logger.ts): diagnostics that
 // should stay off the always-on error console in production builds.
@@ -338,7 +349,404 @@ async function execJava(
   return execJar(jarPath, args, timeoutMs, signal);
 }
 
+// ─── Packed-XPI extraction fallback ──────────────────────────────────────────
+// Zotero keeps installed plugins PACKED: extensions/<id>.xpi with a jar:
+// rootURI. The bundled jars live inside that zip, `java -jar` needs real
+// files, and none of the disk probes in getJarPath can ever succeed — this
+// was the root cause of the misleading「解析组件缺失（未找到 jar 文件）」
+// dialog on every normal (install-from-xpi) setup. On first use we extract
+// core/pdf/lib/<jar> from the XPI into {DataDir}/ztransplit/lib/, verified
+// against the SHA-256 that the PROVENANCE*.json shipped next to the jar
+// declares; the verified copy is reused via a session memo, re-extracted
+// when it goes missing or its hash stops matching (plugin update, truncated
+// write, antivirus quarantine).
+
+/** Session memo of verified extracted copies — keyed by jar file name. */
+const extractedJarMemo = new Map<string, string>();
+
+/**
+ * 精简版安装（不含内置 jar）下载兜底的会话失败登记：失败一次后，本次会话
+ * 内的后续解析不再重试整条“探测 + 下载”链路（离线时避免每次解析白等一轮）。
+ * 重启 Zotero 或换网络环境后自然重置。
+ */
+const jarDownloadFailed = new Set<string>();
+
+/**
+ * 最近一次下载兜底的失败细节。runOpenDataLoader 把它附在「JAR file not
+ * found」错误里，错误分类据此给出「下载失败、检查网络」而不是误导性的
+ * 「请重新安装插件」。
+ */
+let lastJarProvisionFailure: string | null = null;
+
+function joinPath(...parts: string[]): string {
+  const { join } = (globalThis as any).PathUtils || {};
+  if (join) return join(...parts);
+  return parts.join("/");
+}
+
+/** {DataDir}/ztransplit/lib/ — where packed installs get their jars unpacked. */
+function extractedJarPaths(jarFileName: string): { dir: string; target: string } {
+  const dataDir = (globalThis as any).Zotero?.DataDirectory?.dir;
+  if (!dataDir) {
+    throw new Error(
+      "Zotero.DataDirectory.dir is unavailable; cannot stage extracted jars",
+    );
+  }
+  const dir = joinPath(String(dataDir), "ztransplit", "lib");
+  return { dir, target: joinPath(dir, jarFileName) };
+}
+
+/**
+ * jar:file:///C:/…%40addon.xpi!/ → file:///C:/…%40addon.xpi.
+ * Pure string logic (percent-decoding happens in pathFromFileUrl via
+ * nsIFileURL); returns null for anything that is not a jar-wrapped file URL,
+ * i.e. for every unpacked install's plain file: rootURI. Exported for tests.
+ */
+export function fileUrlFromJarUri(
+  rootURI: string | null | undefined,
+): string | null {
+  if (!rootURI || !rootURI.startsWith("jar:")) return null;
+  const inner = rootURI.slice("jar:".length);
+  if (!inner.startsWith("file:")) return null;
+  const bang = inner.indexOf("!");
+  const fileUrl = bang === -1 ? inner : inner.slice(0, bang);
+  return fileUrl || null;
+}
+
+/** file: URL → native path (nsIFileURL performs the percent-decoding). */
+function pathFromFileUrl(fileUrl: string): string | null {
+  try {
+    const Ci = (Components as any).interfaces;
+    const file = (globalThis as any).Services.io
+      .newURI(fileUrl)
+      .QueryInterface(Ci.nsIFileURL).file;
+    return file?.path || null;
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    return null;
+  }
+}
+
+/** nsIZipReader.hasEntry with a getEntry fallback for older builds. */
+function zipHasEntry(zipReader: any, entryPath: string): boolean {
+  try {
+    if (typeof zipReader.hasEntry === "function") {
+      return !!zipReader.hasEntry(entryPath);
+    }
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    /* fall through to getEntry */
+  }
+  try {
+    return !!zipReader.getEntry(entryPath);
+  } catch (e) {
+    return false;
+  }
+}
+
+/** Read a zip entry fully into memory (the jar is ≤ 24 MB). */
+function readZipEntryBytes(zipReader: any, entryPath: string): Uint8Array {
+  const Cc = (Components as any).classes;
+  const Ci = (Components as any).interfaces;
+  const stream = zipReader.getInputStream(entryPath);
+  try {
+    const binary = Cc["@mozilla.org/binaryinputstream;1"].createInstance(
+      Ci.nsIBinaryInputStream,
+    );
+    binary.setInputStream(stream);
+    return new Uint8Array(binary.readArrayBuffer(stream.available()));
+  } finally {
+    try {
+      stream.close();
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+}
+
+/**
+ * The reference SHA-256 for `jarFileName`, read from the PROVENANCE*.json
+ * files shipped next to the jar (inside the same zip). Null when the build
+ * predates the provenance files — the caller then skips verification.
+ */
+function readProvenanceSha256(
+  zipReader: any,
+  jarFileName: string,
+): string | null {
+  const Ci = (Components as any).interfaces;
+  try {
+    const entries = zipReader.getEntries();
+    while (entries.hasMoreElements()) {
+      const name = zipEntryName(entries.getNext());
+      if (!/^core\/pdf\/lib\/PROVENANCE.*\.json$/.test(name)) continue;
+      try {
+        const meta = JSON.parse(
+          new TextDecoder().decode(readZipEntryBytes(zipReader, name)),
+        );
+        if (meta?.file === jarFileName && typeof meta?.sha256 === "string") {
+          return meta.sha256.toLowerCase();
+        }
+      } catch (e) {
+        safeDebug(
+          `[Z-Transplit ODL] provenance entry ${name} unreadable: ${e}`,
+        );
+      }
+    }
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+  }
+  return null;
+}
+
+/**
+ * Extract core/pdf/lib/<jarFileName> from the packed XPI at `xpiPath` into
+ * {DataDir}/ztransplit/lib/ and return the on-disk path.
+ *
+ * An existing extracted copy is reused only after its SHA-256 matches the
+ * provenance reference (so a plugin update or a corrupted file triggers a
+ * clean re-extract); with no provenance reference available the copy is
+ * accepted as-is. Extracted bytes go through a staging file + rename so an
+ * interrupted write can never take the target's place. Throws on checksum
+ * mismatch, missing entry, or any zip/IO failure — getJarPath treats that as
+ * "component unavailable" and falls through to its not-found path.
+ * Exported for the unit suite (tests fake the host boundary).
+ */
+export async function extractJarFromPackedXpi(
+  xpiPath: string,
+  jarFileName: string,
+): Promise<string> {
+  const Cc = (Components as any).classes;
+  const Ci = (Components as any).interfaces;
+  const IOUtils = (globalThis as any).IOUtils;
+
+  const xpiFile = Cc["@mozilla.org/file/local;1"].createInstance(Ci.nsIFile);
+  xpiFile.initWithPath(xpiPath);
+
+  const zipReader = Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
+    Ci.nsIZipReader,
+  );
+  zipReader.open(xpiFile);
+  try {
+    const entryPath = `core/pdf/lib/${jarFileName}`;
+    if (!zipHasEntry(zipReader, entryPath)) {
+      throw new Error(`zip entry ${entryPath} not found in ${xpiPath}`);
+    }
+    const expected = readProvenanceSha256(zipReader, jarFileName);
+
+    const { dir, target } = extractedJarPaths(jarFileName);
+    if (await IOUtils.exists(target)) {
+      if (!expected) return target;
+      const actual = await sha256Hex(await IOUtils.read(target));
+      if (actual === expected) return target;
+      log(
+        `[Z-Transplit ODL] extracted jar hash mismatch (${jarFileName}), re-extracting: ${target}`,
+      );
+    }
+
+    const bytes = readZipEntryBytes(zipReader, entryPath);
+    if (expected) {
+      const hash = await sha256Hex(bytes);
+      if (hash !== expected) {
+        throw new Error(
+          `jar checksum mismatch for ${jarFileName}: expected ${expected}, got ${hash}`,
+        );
+      }
+    }
+
+    await IOUtils.makeDirectory(dir, { createAncestors: true });
+    const staging = joinPath(
+      dir,
+      `.staging-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${jarFileName}`,
+    );
+    await IOUtils.write(staging, bytes);
+    try {
+      await IOUtils.remove(target, { ignoreAbsent: true });
+      await IOUtils.move(staging, target);
+    } catch (e) {
+      try {
+        await IOUtils.remove(staging, { ignoreAbsent: true });
+      } catch (e2) {
+        safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e2);
+      }
+      throw e;
+    }
+    log(
+      `[Z-Transplit ODL] extracted ${jarFileName} from packed XPI → ${target} (${bytes.byteLength} bytes)`,
+    );
+    return target;
+  } finally {
+    try {
+      zipReader.close();
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+}
+
+/** nsIZipReader 枚举元素 → 条目名（不同 Gecko 版本元素类型不同，防御式处理）。 */
+function zipEntryName(raw: any): string {
+  try {
+    if (typeof raw === "string") return raw;
+    const Ci = (Components as any).interfaces;
+    return (
+      ((raw?.QueryInterface?.(Ci.nsISupportsCString)?.data ?? raw?.name) as
+        | string
+        | undefined) || ""
+    );
+  } catch (e) {
+    return raw?.name ?? "";
+  }
+}
+
+/**
+ * 从随包分发的 PROVENANCE*.json 读取某个 jar 的固定指纹（版本、SHA-256、
+ * 字节数）。解包安装读 core/pdf/lib/ 目录；打包安装从 XPI 压缩包内读取。
+ * 精简版安装包不含 jar 但始终携带这些来源文件——它们是下载兜底的信任锚，
+ * 找不到指纹时绝不发起下载。
+ */
+async function readPinnedJarMeta(
+  jarFileName: string,
+  sources: { baseDir?: string; packedXpiPath?: string | null },
+): Promise<PinnedJarMeta | null> {
+  const raw: any[] = [];
+  if (sources.baseDir) {
+    try {
+      const libDir = joinPath(sources.baseDir, "core", "pdf", "lib");
+      const children = (await (globalThis as any).IOUtils.getChildren(
+        libDir,
+      )) as string[];
+      for (const child of children) {
+        const name = child.split(/[\\/]/).pop() || "";
+        if (!/^PROVENANCE.*\.json$/i.test(name)) continue;
+        try {
+          raw.push(
+            JSON.parse(
+              await (globalThis as any).IOUtils.readUTF8(child),
+            ),
+          );
+        } catch (e) {
+          safeDebug(
+            `[Z-Transplit ODL] provenance file ${name} unreadable: ${e}`,
+          );
+        }
+      }
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+  if (sources.packedXpiPath) {
+    try {
+      const Cc = (Components as any).classes;
+      const Ci = (Components as any).interfaces;
+      const xpiFile = Cc["@mozilla.org/file/local;1"].createInstance(
+        Ci.nsIFile,
+      );
+      xpiFile.initWithPath(sources.packedXpiPath);
+      const zipReader = Cc["@mozilla.org/libjar/zip-reader;1"].createInstance(
+        Ci.nsIZipReader,
+      );
+      zipReader.open(xpiFile);
+      try {
+        const entries = zipReader.getEntries();
+        while (entries.hasMoreElements()) {
+          const name = zipEntryName(entries.getNext());
+          if (!/^core\/pdf\/lib\/PROVENANCE.*\.json$/i.test(name)) continue;
+          try {
+            raw.push(
+              JSON.parse(
+                new TextDecoder().decode(
+                  readZipEntryBytes(zipReader, name),
+                ),
+              ),
+            );
+          } catch (e) {
+            safeDebug(
+              `[Z-Transplit ODL] provenance entry ${name} unreadable: ${e}`,
+            );
+          }
+        }
+      } finally {
+        try {
+          zipReader.close();
+        } catch (e) {
+          safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+        }
+      }
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+  }
+  for (const meta of raw) {
+    if (
+      meta?.file === jarFileName &&
+      typeof meta?.sha256 === "string" &&
+      typeof meta?.version === "string"
+    ) {
+      return {
+        file: meta.file,
+        artifact: String(meta.artifact || ""),
+        version: meta.version,
+        sha256: (meta.sha256 as string).toLowerCase(),
+        bytes: Number(meta.bytes) || 0,
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * 流水线内触发的下载没有调用方界面——挂一个进度窗口让等待可见。
+ * 全部 UI 调用尽力而为：窗口故障绝不阻断下载本身。
+ */
+function makeJarDownloadProgress(): ((p: DownloadProgress) => void) | undefined {
+  try {
+    const win = new (Zotero as any).ProgressWindow({
+      window: (Zotero as any).getMainWindow?.() || null,
+    });
+    win.changeHeadline(getString("odl-jar-download-window"));
+    win.show();
+    let lastStep = -1;
+    return (p: DownloadProgress) => {
+      try {
+        if (p.phase === "downloading") {
+          // 每个网络分片都会触发进度事件（24MB 可达数百次），按 10% 步进汇报。
+          const step = Math.floor((p.percent || 0) / 10) * 10;
+          if (step === lastStep) return;
+          lastStep = step;
+        }
+        if (p.phase === "failed") {
+          win.addDescription(
+            "✗ " + (p.message || getString("odl-error-jar-download-failed")),
+          );
+          win.startCloseTimer?.(15000);
+          return;
+        }
+        if (p.message) win.addDescription(p.message);
+        if (p.phase === "done") win.startCloseTimer?.(6000);
+      } catch (e) {
+        safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+      }
+    };
+  } catch (e) {
+    safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    return undefined;
+  }
+}
+
 export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Promise<string> {
+  // Session memo: once a packed-XPI install has a verified extracted copy,
+  // every later call short-circuits here (no probing, no re-hashing).
+  const IOUtils = (globalThis as any).IOUtils;
+  const memoed = extractedJarMemo.get(jarFileName);
+  if (memoed) {
+    try {
+      if (await IOUtils.exists(memoed)) return memoed;
+    } catch (e) {
+      safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+    }
+    extractedJarMemo.delete(jarFileName);
+  }
+
   // Resolve relative to this file: src/core/pdf/lib/opendataloader-pdf-cli.jar
   // Note: zotero-plugin-scaffold strips the leading `src/` from build output,
   // so in the deployed extension the JAR lives at `core/pdf/lib/...`.
@@ -348,15 +756,25 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
   const addonID =
     (globalThis as any).addon?.data?.config?.addonID || "ztransplit@zotero.org";
 
+  // Where a PACKED XPI lives, when the install turns out to be packed. Set
+  // from rootURI (authoritative) first, or from the profile scan below.
+  let packedXpiSource: string | null = null;
+
   // ── Resolve the addon's install root ──────────────────────────────────────
   // Priority:
   //  1. Zotero.getAddonDirectory(addonID) / addon.getInstallPath() — legacy APIs,
   //                                               may be absent on Zotero 9;
   //                                               non-filesystem results
   //                                               (nsIURI/jar:/XPI) discarded
-  //  2. bootstrap `rootURI` free variable       — file: URI converted to a dir
-  //  3. ProfD/extensions scan for "<addonID>" (dir) or "<addonID>.xpi"
+  //  2. bootstrap `rootURI` free variable       — file: URI converted to a dir;
+  //                                               a jar:-wrapped URI (packed
+  //                                               install) feeds the packedXpi
+  //                                               source instead
+  //  3. ProfD/extensions scan for "<addonID>" (dir); "<addonID>.xpi" (file)
+  //                                               recorded as the packedXpi
+  //                                               source
   //  4. relative fallbacks under baseDir / the scaffold build tree
+  //  5. extraction from the packed XPI into {DataDir}/ztransplit/lib/
   let rawDir =
     (Zotero as any).getAddonDirectory?.(addonID) ||
     (Zotero as any).getAddon?.(addonID)?.getInstallPath?.() ||
@@ -398,9 +816,9 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
   if (!rawDir) {
     //    "file:///C:/.../extensions/<addonID>/" — convert directly via
     //    nsIFileURL to the addon directory.
+    const uriStr = typeof rootURI !== "undefined" ? rootURI : "";
+    log(`[Z-Transplit ODL] getJarPath: rootURI="${uriStr}"`);
     try {
-      const uriStr = typeof rootURI !== "undefined" ? rootURI : "";
-      log(`[Z-Transplit ODL] getJarPath: rootURI="${uriStr}"`);
       if (uriStr.startsWith("file:")) {
         const uriFile = (
           (globalThis as any).Services.io
@@ -413,10 +831,22 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
       safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
       /* not a file: URI — fall through to the profile scan */
     }
-    //    named "<addonID>" (dir) or "<addonID>.xpi". ProfD is the real profile
-    //    root (Zotero.DataDirectory.dir is the <profile>/zotero data subdir);
-    //    nsIFile.append() keeps platform-native separators — string concat
-    //    would produce mixed-slash paths that initWithPath rejects on Windows.
+    //    A jar:-wrapped rootURI means the plugin is installed PACKED — the
+    //    bundled jar can only come from extracting the XPI, so remember its
+    //    file path for the extraction fallback at the bottom.
+    if (!rawDir && !packedXpiSource) {
+      const jarFileUrl = fileUrlFromJarUri(uriStr);
+      if (jarFileUrl) {
+        packedXpiSource = pathFromFileUrl(jarFileUrl);
+        log(
+          `[Z-Transplit ODL] getJarPath: packed XPI from rootURI = "${packedXpiSource}"`,
+        );
+      }
+    }
+    //    Profile scan: ProfD is the real profile root (Zotero.DataDirectory.dir
+    //    is the <profile>/zotero data subdir); nsIFile.append() keeps
+    //    platform-native separators — string concat would produce mixed-slash
+    //    paths that initWithPath rejects on Windows.
     if (!rawDir) {
       try {
         const dirService = Cc[
@@ -431,6 +861,11 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
         log(`[Z-Transplit ODL] getJarPath: extDir="${extDir.path}"`);
         if (extDir.exists() && extDir.isDirectory()) {
           const entries = extDir.directoryEntries;
+          // <addonID>.xpi is a FILE, not a directory tree — the old code
+          // accepted it as rawDir and built impossible paths like
+          // "…\ztransplit@zotero.org.xpi\core\pdf\lib\…". Remember it as
+          // the packed-install source for the extraction fallback instead.
+          let packedXpiEntry: string | null = null;
           while (entries.hasMoreElements()) {
             const rawEntry = entries.getNext();
             const entry = rawEntry?.QueryInterface?.(
@@ -438,11 +873,31 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
             ) as nsIFile | null;
             if (!entry) continue;
             const leaf = entry.leafName;
-            // Match "<addonID>" dir or "<addonID>.xpi"
-            if (leaf === addonID || leaf === `${addonID}.xpi`) {
-              rawDir = entry;
-              break;
+            if (leaf === `${addonID}.xpi`) {
+              try {
+                if (entry.isFile()) packedXpiEntry = entry.path;
+              } catch (e) {
+                safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+              }
+              continue;
             }
+            if (leaf === addonID) {
+              // Match "<addonID>" (directory) only.
+              try {
+                if (entry.isDirectory()) {
+                  rawDir = entry;
+                  break;
+                }
+              } catch (e) {
+                safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
+              }
+            }
+          }
+          if (!packedXpiSource && packedXpiEntry) {
+            packedXpiSource = packedXpiEntry;
+            log(
+              `[Z-Transplit ODL] getJarPath: packed XPI from profile scan = "${packedXpiSource}"`,
+            );
           }
         }
       } catch (e) {
@@ -510,6 +965,66 @@ export async function getJarPath(jarFileName = "opendataloader-pdf-cli.jar"): Pr
       safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e);
       log(`[Z-Transplit ODL] getJarPath candidate: ${candidate} → ERROR`);
       // ignore and try next candidate
+    }
+  }
+
+  // ── Packed-XPI extraction fallback ────────────────────────────────────────
+  // Every disk probe failed. When the plugin is installed as a packed XPI,
+  // the bundled jar exists only inside that zip — unpack it (SHA-256-checked
+  // against the shipped provenance file) and serve the copy. This is what
+  // makes a normal install-from-xpi work at all.
+  if (packedXpiSource) {
+    try {
+      const extracted = await extractJarFromPackedXpi(packedXpiSource, jarFileName);
+      extractedJarMemo.set(jarFileName, extracted);
+      return extracted;
+    } catch (e) {
+      // Loud: losing this detail is the difference between "works" and the
+      // misleading「解析组件缺失」dialog.
+      safeDebug(
+        `[Z-Transplit ODL] getJarPath: extraction from packed XPI failed: ${e}`,
+      );
+      try {
+        (globalThis as any).Zotero?.logError?.(e);
+      } catch (e2) {
+        safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e2);
+        /* best-effort */
+      }
+    }
+  }
+
+  // ── Download fallback (slim builds) ───────────────────────────────────────
+  // 精简版安装包不内置 24MB 的解析组件：按随包分发的 PROVENANCE 指纹从镜像
+  // 取件（探测择优 → 整包下载 → 解包核对 SHA-256 → 原子落地）。会话内失败
+  // 一次即止，避免离线时每次解析都重跑整条探测链路。
+  if ((packedXpiSource || baseDir) && !jarDownloadFailed.has(jarFileName)) {
+    const meta = await readPinnedJarMeta(jarFileName, {
+      baseDir: baseDir || undefined,
+      packedXpiPath: packedXpiSource,
+    });
+    if (meta) {
+      try {
+        const paths = extractedJarPaths(jarFileName);
+        const downloaded = await downloadPinnedJar(
+          meta,
+          paths,
+          makeJarDownloadProgress(),
+        );
+        extractedJarMemo.set(jarFileName, downloaded);
+        return downloaded;
+      } catch (e) {
+        jarDownloadFailed.add(jarFileName);
+        lastJarProvisionFailure = String(e);
+        safeDebug(
+          `[Z-Transplit ODL] getJarPath: download fallback failed: ${e}`,
+        );
+        try {
+          (globalThis as any).Zotero?.logError?.(e);
+        } catch (e2) {
+          safeDebug("[Z-Transplit] OpenDataLoaderPdfClient: " + e2);
+          /* best-effort */
+        }
+      }
     }
   }
 
@@ -1034,9 +1549,15 @@ async function runOpenDataLoader(
   const exists = jarFile.exists();
   log(`[Z-Transplit ODL] runOpenDataLoader: jarFile.exists() = ${exists}`);
   if (!exists) {
+    // 附上下载兜底的失败细节（如有）：错误分类据此把「重新安装插件」换成
+    // 「检查网络后重试」——精简版安装里 jar 缺失的真正原因通常是下载失败。
     return {
       success: false,
-      error: `JAR file not found at ${jarPath}. Please ensure opendataloader-pdf-cli.jar is present.`,
+      error: `JAR file not found at ${jarPath}. Please ensure opendataloader-pdf-cli.jar is present.${
+        lastJarProvisionFailure
+          ? ` (ODL jar download failed: ${lastJarProvisionFailure})`
+          : ""
+      }`,
     };
   }
 

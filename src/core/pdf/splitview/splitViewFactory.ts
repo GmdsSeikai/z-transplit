@@ -39,6 +39,7 @@ import { createAbortController } from "../../../utils/abort";
 // 结构化的解析错误分类（reason 字段）——isJavaMissingCause 优先读它，
 // 避免对本地化/被重包装过的错误文本做正则猜测。纯 TS 类，无宿主依赖。
 import { PdfParseError } from "../PdfParseError";
+import { classifyJarError } from "../jarErrorKind";
 import { config } from "../../../../package.json";
 import {
   addTrackedListener,
@@ -589,8 +590,20 @@ export function friendlyOdlError(msg: string): string {
     return getString("odl-error-java-missing");
   }
   const m = msg.toLowerCase();
-  if (m.includes("jar") || m.includes("opendataloader-pdf-cli"))
+  // Component errors, by signature — the old blanket `includes("jar")` rule
+  // rewrote every java.lang.* stack trace that merely mentioned a jar into
+  // 「解析组件缺失，请重新安装插件」, and its reinstall advice could not fix
+  // the packed-XPI case it was most often shown for. See classifyJarError.
+  const jarKind = classifyJarError(msg);
+  if (jarKind === "download-failed") {
+    return getString("odl-error-jar-download-failed");
+  }
+  if (jarKind === "missing") {
     return getString("odl-error-jar-missing");
+  }
+  if (jarKind === "unreadable") {
+    return getString("odl-error-jar-unreadable");
+  }
   // XPCOM nsIFile / nsIError file-path failures — replace the raw
   // `Component returned failure code: 0x... [nsIFile.initWithPath]` string
   // that otherwise leaks through to the user.

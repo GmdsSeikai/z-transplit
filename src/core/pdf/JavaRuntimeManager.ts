@@ -34,6 +34,7 @@
 
 import { getString } from "../../utils/locale";
 import { safeDebug } from "../../utils/logger";
+import { sha256Hex } from "../../utils/hash";
 
 export interface JavaStatus {
   /** A usable java executable path was resolved (managed JRE or system). */
@@ -554,23 +555,6 @@ async function extractArchive(
   }
 }
 
-
-/** SHA-256 hex digest of `data`, or null when WebCrypto is unavailable. */
-async function sha256Hex(data: Uint8Array): Promise<string | null> {
-  try {
-    const subtle = (globalThis as any).crypto?.subtle;
-    if (!subtle?.digest) return null;
-    const digest = new Uint8Array(await subtle.digest("SHA-256", data));
-    let hex = "";
-    for (let i = 0; i < digest.length; i++) {
-      hex += digest[i].toString(16).padStart(2, "0");
-    }
-    return hex;
-  } catch (e) {
-    safeDebug("[Z-Transplit] JavaRuntimeManager: " + e);
-    return null;
-  }
-}
 
 /**
  * Sibling staging dir: archives are extracted and probed here first, then

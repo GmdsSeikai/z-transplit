@@ -96,6 +96,36 @@ describe("friendlyOdlError / isJavaMissingError — Java 启动失败签名", ()
   });
 });
 
+describe("friendlyOdlError — 组件 jar 错误的两类文案", () => {
+  it("jar 确实缺失时提示重新安装", () => {
+    expect(
+      friendlyOdlError(
+        "JAR file not found at C:\\ext\\core\\pdf\\lib\\opendataloader-pdf-cli.jar. Please ensure opendataloader-pdf-cli.jar is present.",
+      ),
+    ).toBe(KEY("odl-error-jar-missing"));
+    expect(
+      friendlyOdlError(
+        "OpenDataLoader JAR is missing. Reinstall Z-Transplit to restore opendataloader-pdf-cli.jar.",
+      ),
+    ).toBe(KEY("odl-error-jar-missing"));
+  });
+
+  it("jar 存在但 Java 无法访问时提示检查杀毒软件，而非重新安装", () => {
+    expect(
+      friendlyOdlError(
+        "Error: Unable to access jarfile C:\\ext\\core\\pdf\\lib\\opendataloader-pdf-cli.jar",
+      ),
+    ).toBe(KEY("odl-error-jar-unreadable"));
+  });
+
+  it("仅提到 jar 字样的运行时错误不再误报组件缺失", () => {
+    // 旧实现用裸 includes("jar") 判定，这条会被改写成「解析组件缺失」
+    const msg =
+      'Exception in thread "main" java.lang.IllegalStateException while reading entry';
+    expect(friendlyOdlError(msg)).toBe(msg);
+  });
+});
+
 describe("isJavaMissingCause — 结构化 reason 优先，文本签名回退", () => {
   it("PdfParseError(java-missing) 判真，即使消息被改写成不匹配的文本", () => {
     const e = new PdfParseError("java-missing", "Java 不可用：任意细节");

@@ -60,6 +60,13 @@ splitview-menu-cancel = 取消进行中的翻译
 ## OpenDataLoader 流水线错误（src/core/pdf/splitview/splitViewFactory.ts）
 odl-error-java-missing = 翻译需要 Java 11 或更高版本。
 odl-error-jar-missing = OpenDataLoader 解析组件缺失（未找到 jar 文件），请重新安装插件。
+odl-error-jar-unreadable = 解析组件无法读取（Java 无法访问 jar 文件）。请检查文件是否被杀毒软件隔离，确认文件权限，或重新安装插件。
+odl-error-jar-download-failed = 解析组件自动下载失败。请检查网络后重试；若反复失败，可改用内置解析组件的完整版安装包。
+odl-jar-download-window = 正在下载 OpenDataLoader 解析组件
+odl-jar-download-probe = 正在测试可用镜像…
+odl-jar-download-downloading = 正在下载（{ $percent }%）
+odl-jar-download-verifying = 校验并安装…
+err-jar-load = 无法读取解析组件 jar 文件（路径非法）：{ $path }（{ $message }）
 odl-error-file-path = 文件路径无效：PDF 或 Java 路径不合法。请检查 Zotero 数据目录权限，或重启 Zotero。
 odl-error-network = { $detail }
 odl-error-not-configured = 未配置翻译。请在 Zotero 设置的 Z-Transplit 中选择翻译引擎并填写其配置。

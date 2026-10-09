@@ -63,6 +63,13 @@ splitview-menu-cancel = Cancel translation in progress
 ## OpenDataLoader pipeline errors (src/core/pdf/splitview/splitViewFactory.ts)
 odl-error-java-missing = Translation requires Java 11 or later.
 odl-error-jar-missing = The OpenDataLoader parsing component is missing (jar file not found). Please reinstall the plugin.
+odl-error-jar-unreadable = The parsing component could not be read (Java cannot access the jar file). Check whether antivirus software quarantined it, then check the file's permissions, or reinstall the plugin.
+odl-error-jar-download-failed = The parsing component could not be downloaded automatically. Check the network and retry; if it keeps failing, use the full installer that bundles the component.
+odl-jar-download-window = Downloading the OpenDataLoader parsing component
+odl-jar-download-probe = Testing mirrors…
+odl-jar-download-downloading = Downloading ({ $percent }%)
+odl-jar-download-verifying = Verifying and installing…
+err-jar-load = Could not read the parsing component jar file (invalid path): { $path } ({ $message })
 odl-error-file-path = Invalid file path: the PDF or Java path is not valid. Check the Zotero data directory permissions, or restart Zotero.
 odl-error-network = { $detail }
 odl-error-not-configured = Translation is not configured. Pick a translation engine and fill in its credentials in Zotero's Z-Transplit settings.

@@ -8,6 +8,8 @@
  * Ported from leadero's src/core/pdf/PdfParseError.ts (zero external deps).
  */
 
+import { classifyJarError } from "./jarErrorKind";
+
 export type PdfParseErrorReason =
   | "disabled" // PDF parsing switch is off
   | "no-attachment" // item has no PDF attachment
@@ -60,7 +62,10 @@ export function classifyOdlError(error: string): PdfParseErrorReason {
   if (e.includes("java executable not found") || e.includes("no java")) {
     return "java-missing";
   }
-  if (e.includes("jar")) return "jar-missing";
+  // Component errors only — a bare "jar" substring used to swallow every
+  // java.lang.* stack trace that happened to mention a jar (see
+  // classifyJarError for the two signatures that actually count).
+  if (classifyJarError(error)) return "jar-missing";
   if (e.includes("timed out") || e.includes("timeout")) return "timeout";
   return "parse-failed";
 }

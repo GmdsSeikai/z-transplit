@@ -1,6 +1,16 @@
 import { defineConfig } from "zotero-plugin-scaffold";
 import pkg from "./package.json";
 
+/**
+ * 精简版（默认）：不内置 24MB 的 OpenDataLoader 解析组件，XPI 从约 27MB 缩到
+ * 约 8MB。首次解析时插件按随包分发的 PROVENANCE*.json 指纹从镜像自动下载该
+ * 组件（见 src/core/pdf/OdlJarDownloader.ts；镜像实测与取件策略见该文件头）。
+ * 完整版：设置环境变量 ZTRANSPLIT_FULL_XPI=1 构建，两个 jar 全部内置，供
+ * 离线环境分发；内置时下载兜底不会被触发。
+ * 两个变体都必须携带 lib 下的 PROVENANCE*.json——它们是下载与校验的信任锚。
+ */
+const fullXpi = process.env.ZTRANSPLIT_FULL_XPI === "1";
+
 export default defineConfig({
   source: ["src", "addon"],
   dist: ".scaffold/build",
@@ -14,7 +24,13 @@ export default defineConfig({
     "https://github.com/{{owner}}/{{repo}}/releases/download/v{{version}}/{{xpiName}}.xpi",
 
   build: {
-    assets: ["addon/**/*.*", "src/core/pdf/lib/*.jar"],
+    assets: [
+      "addon/**/*.*",
+      "src/core/pdf/lib/*.json",
+      fullXpi
+        ? "src/core/pdf/lib/*.jar"
+        : "src/core/pdf/lib/ztransplit-region-text-remover.jar",
+    ],
     define: {
       ...pkg.config,
       author: pkg.author,
