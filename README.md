@@ -119,7 +119,10 @@ sentence and stop are all there.
 
 Switchable in the settings pane (Edit ▸ Settings ▸ Z-Transplit). All share a
 content-addressed cross-session cache: the same text + language pair + engine answers
-from cache on the second request, and editing one character re-translates.
+from cache on the second request, and editing one character re-translates. The cache
+is shared across all four entry points — full-text translation, split view, the
+bilingual view and selection translation — so a paragraph translated anywhere is
+reused verbatim by every other entry point.
 
 | Engine | API key | Notes |
 | --- | --- | --- |

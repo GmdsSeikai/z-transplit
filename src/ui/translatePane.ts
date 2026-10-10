@@ -60,6 +60,12 @@ import { isIMEComposing } from "../utils/ime";
 import { clearChildren, el, XHTML_NS } from "../utils/dom";
 import { copyText } from "../utils/clipboard";
 import { safeDebug } from "../utils/logger";
+import {
+  cacheAvailable,
+  cacheKey,
+  getCachedTranslations,
+  putCachedTranslation,
+} from "../core/translation/translationCache";
 import { checkTranslationReadiness } from "../core/translation/featureReadiness";
 import {
   flattenCardText,
@@ -997,6 +1003,8 @@ export function mountTranslatePane(
     // Resolve the translator from the chrome realm. A missing module is a
     // capability failure and must be disclosed as one (§9.4 失败≠空).
     let createTranslator: (t: string, s?: string) => any;
+    /** Engine-configuration fingerprint, shared with the persistent cache. */
+    let engineIdentity: string | undefined;
     try {
       const mod = await loadTranslatorModule();
       createTranslator = mod?.createTranslator;
@@ -1005,6 +1013,10 @@ export function mountTranslatePane(
           "src/core/translation/translationEngines does not export createTranslator()",
         );
       }
+      engineIdentity =
+        typeof mod.engineCacheIdentity === "function"
+          ? String(mod.engineCacheIdentity())
+          : undefined;
     } catch (e) {
       setState({
         status: "error",
@@ -1028,12 +1040,42 @@ export function mountTranslatePane(
 
     try {
       const target = targetLang.trim() || defaultTargetLang();
-      const translator = createTranslator(target) as (
-        t: string,
-        tgt?: string,
-        src?: string,
-      ) => Promise<string>;
-      const translated = await translator(text, target);
+      // Persistent reuse: the selection flow is the one translation entry
+      // without a bulk cache layer of its own (the PDF pipeline and the
+      // bilingual view consult the store before their engines). Same
+      // content-addressed store and key space as those flows ("auto" source,
+      // shared engine identity): an exact-text hit never reaches the engine,
+      // and a fresh result is stored back so a later document translation can
+      // pick it up across sessions.
+      const cacheIdentity =
+        engineIdentity && cacheAvailable() ? engineIdentity : undefined;
+      const diskKey = cacheIdentity
+        ? await cacheKey(cacheIdentity, "auto", target, text)
+        : null;
+      let translated: string | undefined;
+      if (diskKey) {
+        const hits = await getCachedTranslations([diskKey]);
+        translated = hits.get(diskKey);
+      }
+      if (translated === undefined) {
+        const translator = createTranslator(target) as (
+          t: string,
+          tgt?: string,
+          src?: string,
+        ) => Promise<string>;
+        translated = await translator(text, target);
+        if (translated?.trim() && diskKey && cacheIdentity) {
+          void putCachedTranslation(
+            cacheIdentity,
+            "auto",
+            target,
+            text,
+            translated,
+          ).catch((e) =>
+            safeDebug("[Z-Transplit] translatePane cache store: " + e),
+          );
+        }
+      }
 
       if (controller.signal.aborted || destroyed) return;
 

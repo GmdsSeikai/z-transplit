@@ -16,12 +16,27 @@
  *   - destroy() 移除 DOM 并在途请求失效
  */
 import { JSDOM } from "jsdom";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mountTranslatePane } from "../../../src/ui/translatePane";
-import { clearTranslationCache } from "../../../src/core/translation/translationEngines";
+import {
+  clearTranslationCache,
+  engineCacheIdentity,
+} from "../../../src/core/translation/translationEngines";
+import {
+  cacheKey,
+  getCachedTranslations,
+  setCacheDirForTests,
+} from "../../../src/core/translation/translationCache";
 import { clearAllWordCards } from "../../../src/core/wordcards/wordCardStore";
 import { createZoteroMock } from "../../qa/harness/zotero-mock";
 import { createFetchMock } from "../../qa/harness/fetch-mock";
+import {
+  installIOUTilsShim,
+  uninstallIOUTilsShim,
+} from "../../node/helpers/ioutils-shim";
 
 const PREFIX = "extensions.zotero.ztransplit.";
 
@@ -582,5 +597,64 @@ describe("词卡：单词选区走词典链", () => {
     expect(ctx.fm.calls.length).toBe(callsAfterSentence);
     expect(ctx.text(ctx.body)).toContain("ˈrezənəns");
     expect(ctx.text(ctx.body)).toContain(K.sourceYoudao);
+  });
+});
+
+describe("B16 划词翻译：持久段落缓存（与 PDF 管线 / 双语对照共用同一存储）", () => {
+  let ctx: Ctx | undefined;
+  let cacheDir: string;
+  beforeEach(() => {
+    // 真实读写一个临时缓存目录：断言的是磁盘记录与命中行为，不是内存桩。
+    cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "ztransplit-pane-cache-"));
+    setCacheDirForTests(cacheDir);
+    installIOUTilsShim();
+    clearTranslationCache();
+    clearAllWordCards();
+  });
+  afterEach(() => {
+    ctx?.fm.uninstall();
+    ctx?.z.uninstall();
+    ctx?.dom.window.close();
+    setCacheDirForTests(null);
+    uninstallIOUTilsShim();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it("翻译成功后写入与管线同键的缓存记录", async () => {
+    ctx = setup({ ...ENGINE_PREFS, "translate.auto": true }, [
+      "persistent paragraph",
+    ]);
+    routeOK(ctx.fm, "已缓存译文");
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    await flush(80);
+    expect(ctx.text(ctx.body)).toContain("已缓存译文");
+
+    // 键空间与管线一致：引擎指纹 + auto 源语言 + 目标语言 + 原文
+    const key = await cacheKey(
+      engineCacheIdentity(),
+      "auto",
+      "zh-CN",
+      "persistent paragraph",
+    );
+    const hits = await getCachedTranslations([key]);
+    expect(hits.get(key)).toBe("已缓存译文");
+  });
+
+  it("同一文本再次翻译命中缓存：不再发网络请求", async () => {
+    // 第一次：真实翻译并落盘（1 次网络请求）
+    ctx = setup({ ...ENGINE_PREFS, "translate.auto": true }, ["repeat me"]);
+    routeOK(ctx.fm, "缓存命中译文");
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    await flush(80);
+    expect(ctx.fm.calls.length).toBe(1);
+
+    // 清掉内存 LRU，强制第二块面板走磁盘层；同一选区文本应直接命中。
+    clearTranslationCache();
+    const body2 = ctx.doc.createElement("div");
+    ctx.doc.body.appendChild(body2);
+    mountTranslatePane({ doc: ctx.doc, body: body2 });
+    await flush(80);
+    expect(String(body2.textContent)).toContain("缓存命中译文");
+    expect(ctx.fm.calls.length).toBe(1); // 未新增网络请求
   });
 });
