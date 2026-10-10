@@ -100,7 +100,9 @@ progress.
 ### 5. Translation-only Mode
 
 In the same bilingual session switch to "Translation only": original blocks are hidden,
-leaving only the translation for smooth reading.
+leaving only the translation for smooth reading. Click a translated paragraph to
+temporarily reveal its original text (click it again, or click another paragraph, to
+hide it) — no mode switching needed when a translation is hard to understand.
 
 ![Translation only](docs/screenshots/translation-only.png)
 

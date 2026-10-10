@@ -9,6 +9,7 @@ export type FluentMessageId =
   | 'bilingual-exit'
   | 'bilingual-mode-interleave'
   | 'bilingual-mode-trans-only'
+  | 'bilingual-peek-hint'
   | 'bilingual-placeholder'
   | 'bilingual-progress'
   | 'bilingual-retry'

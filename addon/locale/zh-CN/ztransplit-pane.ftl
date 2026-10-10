@@ -87,6 +87,7 @@ bilingual-enable = 双语对照
 bilingual-exit = 退出双语
 bilingual-mode-interleave = 上下对照
 bilingual-mode-trans-only = 仅译文
+bilingual-peek-hint = 点击查看本段原文
 bilingual-progress = 已译 { $done }/{ $total } 段
 bilingual-placeholder = 翻译中…
 bilingual-block-failed = 翻译失败

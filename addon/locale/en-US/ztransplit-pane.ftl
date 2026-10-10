@@ -88,6 +88,7 @@ bilingual-enable = Bilingual
 bilingual-exit = Exit bilingual
 bilingual-mode-interleave = Interleaved (original + translation)
 bilingual-mode-trans-only = Translation only
+bilingual-peek-hint = Click to show the original text of this paragraph
 bilingual-progress = { $done }/{ $total } paragraphs translated
 bilingual-placeholder = Translating…
 bilingual-block-failed = Translation failed

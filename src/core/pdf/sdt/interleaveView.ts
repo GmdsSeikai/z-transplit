@@ -12,6 +12,11 @@
  *   ztransplit-bi-mode-trans-only  originals hidden (translations remain)
  *   (mode-off removes everything — handled by exitInterleave)
  *
+ * In trans-only mode a click on a translation block temporarily reveals its
+ * original paragraph (data-peek on the original + the CSS overrides in
+ * ensureStyle); the peek moves with the next block click and is cleared on
+ * mode switches and on dispose. Interleave mode has no click behavior.
+ *
  * Translation supply is the LazyTranslateQueue; the persistent translation
  * cache (translationCache.ts) sits between the queue and the engine.
  *
@@ -133,6 +138,23 @@ function ensureStyle(doc: Document): void {
 .ztransplit-bi-mode-trans-only .${BI_CLASS} {
   display: block !important;
 }
+/* Translation-only peek: clicking a translation block reveals the original
+ * paragraph right above it until the next click or mode switch. The
+ * [data-peek] attribute adds one attribute-selector beat over the hider, so
+ * with both rules !important the peek wins. data-peek is a transient view
+ * state on official elements — cleared on every mode switch, on dispose, and
+ * never written to anything but the display. */
+#sdt-content.ztransplit-bi-mode-trans-only > [data-ref-path]:not(.${BI_CLASS})[data-peek] {
+  display: block !important;
+}
+#sdt-content.ztransplit-bi-mode-trans-only > [data-ref-path][data-peek] {
+  background: var(--ztransplit-bi-bg, rgba(31, 158, 141, 0.08));
+  border-inline-start: 3px solid var(--ztransplit-accent, #1f9e8d);
+  border-radius: 4px;
+}
+.ztransplit-bi-mode-trans-only .${BI_CLASS} {
+  cursor: pointer;
+}
 `;
   (doc.head ?? doc.documentElement)?.appendChild(style);
 }
@@ -177,6 +199,71 @@ export async function buildInterleave(
     "[Z-Transplit] interleaveView: injected " + injected.size +
       " blocks (session.blocks=" + session.blocks.length + ")",
   );
+
+  // ── translation-only peek ───────────────────────────────────────────────
+  // Click a translation block in 仅译文 mode → the original paragraph right
+  // above it is temporarily revealed (data-peek + the CSS overrides above);
+  // click the block again to dismiss, click another block to move the peek.
+  // Interleave mode stays click-free so text selection and annotation
+  // gestures behave natively there.
+  const originals = new Map<string, HTMLElement>();
+  for (const block of session.blocks) originals.set(block.refPath, block.el);
+  let peeked: Element | null = null;
+  const clearPeek = (): void => {
+    if (!peeked) return;
+    try {
+      peeked.removeAttribute("data-peek");
+    } catch {
+      /* element already gone with the view */
+    }
+    peeked = null;
+  };
+  const onContainerClick = (ev: Event): void => {
+    if (!session.container.classList.contains(MODE_CLASSES.transOnly)) return;
+    // A drag-selection that ends on the block still fires click — not a
+    // toggle gesture. getSelection is reached through the content realm's
+    // own window (the blocks live in the SDT iframe document).
+    try {
+      const sel = doc.defaultView?.getSelection?.() ?? null;
+      if (sel && !sel.isCollapsed) return;
+    } catch {
+      /* no selection API — treat as a plain click */
+    }
+    // Duck-typed on purpose: the event target is a content-realm element, so
+    // an `instanceof Element` against the chrome realm would always be false.
+    const target = ev.target as {
+      closest?: (selector: string) => Element | null;
+    } | null;
+    const bi = target?.closest?.("." + BI_CLASS);
+    if (!bi || !session.container.contains(bi)) {
+      // Click outside our blocks: a bare-container click dismisses the peek;
+      // anything else (above all, the peeked original itself) is left alone
+      // so selecting a word in the revealed paragraph does not dismiss it.
+      if (target === session.container) clearPeek();
+      return;
+    }
+    // The block's retry button keeps its click for itself.
+    if (target?.closest?.(".ztransplit-bi-retry")) return;
+    const refPath = (bi as HTMLElement).dataset?.refPath;
+    const original = refPath ? originals.get(refPath) : undefined;
+    if (!original) {
+      clearPeek();
+      return;
+    }
+    if (peeked === original) {
+      clearPeek();
+      return;
+    }
+    clearPeek();
+    peeked = original;
+    try {
+      original.setAttribute("data-peek", "");
+      original.scrollIntoView?.({ block: "nearest" });
+    } catch {
+      /* display state only — a failure here must not break the click */
+    }
+  };
+  session.container.addEventListener("click", onContainerClick);
 
   // ── cache hooks ────────────────────────────────────────────────────────
   const cacheOn = !!options.cacheIdentity && cacheAvailable();
@@ -280,6 +367,20 @@ export async function buildInterleave(
       session.container.classList.add(
         mode === "transOnly" ? MODE_CLASSES.transOnly : MODE_CLASSES.interleave,
       );
+      // The peek's display override is trans-only-only, so any mode switch
+      // invalidates it; the pointer affordance and hint follow the mode.
+      clearPeek();
+      for (const el of injected.values()) {
+        try {
+          if (mode === "transOnly") {
+            el.setAttribute("title", getString("bilingual-peek-hint"));
+          } else {
+            el.removeAttribute("title");
+          }
+        } catch {
+          /* element already gone with the view */
+        }
+      }
     },
     getMode() {
       return session.container.classList.contains(MODE_CLASSES.transOnly)
@@ -332,6 +433,10 @@ export async function buildInterleave(
     },
     async dispose() {
       queue.stop();
+      session.container.removeEventListener("click", onContainerClick);
+      // data-peek is the one transient state we ever put on official
+      // elements — strip it so exit leaves the view exactly as found.
+      clearPeek();
       for (const el of injected.values()) {
         try {
           el.remove();
