@@ -4,8 +4,11 @@
  *
  * Renders a compact bar above the translate pane root: a bilingual toggle,
  * presentation-mode buttons (上下对照 interleave / 仅译文 translation-only),
- * progress and a status line. On hosts without the Zotero 10 SDT reading mode
- * it renders a capability disclosure instead of the controls.
+ * progress and a status line. The mode buttons are always clickable — with a
+ * live session they switch the presentation; without one they start a session
+ * directly in that mode, and the choice is remembered as the start-up
+ * default. On hosts without the Zotero 10 SDT reading mode it renders a
+ * capability disclosure instead of the controls.
  *
  * One live bilingual session per process: starting a session for another item
  * exits the previous one. The session (reading-mode overlay + injected
@@ -18,7 +21,7 @@
 import { safeDebug } from "../utils/logger";
 import { toErrorMessage } from "../utils/error";
 import { getString } from "../utils/locale";
-import { getPref, getPrefDynamic } from "../utils/prefs";
+import { getPref, getPrefDynamic, setPref } from "../utils/prefs";
 import { createAbortController } from "../utils/abort";
 import { resolveCurrentReader } from "./translatePane";
 import { probeReaderCapabilities } from "../core/capabilities";
@@ -84,6 +87,13 @@ function targetLanguageFor(): string {
     locale = "";
   }
   return pref || locale || "zh-CN";
+}
+
+/** The persisted start-up mode — anything unparsable falls back to interleave. */
+function storedDefaultMode(): BilingualMode {
+  return (getPref("reader.bilingual.defaultMode") as string) === "transOnly"
+    ? "transOnly"
+    : "interleave";
 }
 
 function el(doc: Document, tag: string, cls?: string): HTMLElement {
@@ -169,8 +179,13 @@ async function makeBatchTranslator(
 async function startSession(
   state: ControlState,
   itemID?: number,
+  requestedMode?: BilingualMode,
 ): Promise<void> {
   safeDebug("[Z-Transplit] bilingualControl: startSession itemID=" + itemID);
+  // Immediate feedback, BEFORE reader resolution: that step can legitimately
+  // wait seconds (the retry loop below), and a silent click reads as a dead
+  // button — the 7.0.15 E2E showed the association can lag for ~a second.
+  state.setStatus(getString("bilingual-sdt-loading"));
   let reader = resolveCurrentReader(state.doc, itemID);
   // Reader↔tab association can lag the click (seen once in the 7.0.15 E2E:
   // a reader was open but resolution returned null for ~a second, and the
@@ -191,7 +206,6 @@ async function startSession(
     return;
   }
 
-  state.setStatus(getString("bilingual-sdt-loading"));
   const session = await enterBilingualSession(reader);
   safeDebug("[Z-Transplit] bilingualControl: session=" + !!session);
   if (!session) {
@@ -219,7 +233,6 @@ async function startSession(
       cacheIdentity = undefined;
     }
 
-    const defaultMode = (getPref("reader.bilingual.defaultMode") as string) || "interleave";
     const handle = await buildInterleave(session, {
       targetLanguage,
       cacheIdentity,
@@ -236,10 +249,15 @@ async function startSession(
         state.refreshReadAloudButtons();
       },
     });
-    if (defaultMode === "transOnly") handle.setMode("transOnly");
-    // Sync the mode buttons with the ACTUAL mode — the program never writes it
-    // anywhere else, so a default of transOnly would otherwise show a stale
-    // highlight (setMode's own click listener is the only other writer).
+    // A direct mode-button entry wins over the stored default; both flow
+    // through setMode so the buttons mirror the ACTUAL mode either way
+    // (setMode's own click listener is the only other writer).
+    handle.setMode(requestedMode ?? storedDefaultMode());
+    if (requestedMode) {
+      // An explicit mode entry is the new start-up default — same contract as
+      // switching modes mid-session. Written only after the session took it.
+      setPref("reader.bilingual.defaultMode", requestedMode);
+    }
     state.setMode(handle.getMode());
 
     active = { itemID: itemID ?? -1, session, handle, abort };
@@ -408,7 +426,7 @@ function startReadAloud(
 interface ControlState {
   doc: Document;
   toggle: HTMLButtonElement;
-  /** 对照模式按钮（上下对照 / 仅译文），会话外禁用。 */
+  /** 对照模式按钮（上下对照 / 仅译文）。始终可点：会话中切换显示，会话外以该模式直接启动。 */
   modeButtons: {
     interleave: HTMLButtonElement;
     transOnly: HTMLButtonElement;
@@ -485,12 +503,12 @@ export function mountBilingualControl(options: {
       toggle.textContent = getString(
         activeNow ? "bilingual-exit" : "bilingual-enable",
       );
-      if (modeButtons) {
-        modeButtons.interleave.disabled = !activeNow;
-        modeButtons.transOnly.disabled = !activeNow;
-        // Leaving a session resets the highlight so no mode leaks into the
-        // next one (startSession writes the actual mode right after entering).
-        if (!activeNow) state.setMode("interleave");
+      if (modeButtons && !activeNow) {
+        // Leaving a session: reset the highlight to the mode the NEXT session
+        // will start in (the stored default), so it stays truthful — the mode
+        // buttons are always enabled now and mean "start in this mode" when
+        // no session is live.
+        state.setMode(storedDefaultMode());
       }
       state.refreshReadAloudButtons();
       if (activeNow) {
@@ -535,51 +553,74 @@ export function mountBilingualControl(options: {
     b.translation.disabled = !active || !sourceHasTranslation();
   }
 
+  // Startup is exclusive: the toggle and both mode buttons share one flow, so
+  // a starting session briefly disables all three instead of allowing a
+  // second entry to race the first.
+  let starting = false;
+  const setStarting = (v: boolean): void => {
+    starting = v;
+    toggle.disabled = v;
+    if (modeButtons) {
+      modeButtons.interleave.disabled = v;
+      modeButtons.transOnly.disabled = v;
+    }
+  };
+
+  const beginSession = async (requestedMode?: BilingualMode): Promise<void> => {
+    if (starting) return;
+    setStarting(true);
+    try {
+      await startSession(state, options.itemID, requestedMode);
+    } catch (e) {
+      safeDebug("[Z-Transplit] bilingualControl toggle: " + e);
+      // setActive first — it clears the status line, and the error must be
+      // the thing the user ends up reading.
+      state.setActive(false);
+      state.setStatus(getString("bilingual-sdt-unpack-failed", {
+        error: toErrorMessage(e),
+      }));
+    } finally {
+      setStarting(false);
+    }
+  };
+
   toggle.addEventListener("click", () => {
     void (async () => {
-      try {
-        if (active) {
-          await stopSession(state);
-          state.setActive(false);
-          return;
-        }
-        toggle.disabled = true;
-        try {
-          await startSession(state, options.itemID);
-        } finally {
-          toggle.disabled = false;
-        }
-      } catch (e) {
-        safeDebug("[Z-Transplit] bilingualControl toggle: " + e);
-        // setActive first — it clears the status line, and the error must be
-        // the thing the user ends up reading.
+      if (active) {
+        await stopSession(state);
         state.setActive(false);
-        state.setStatus(getString("bilingual-sdt-unpack-failed", {
-          error: toErrorMessage(e),
-        }));
+        return;
       }
+      await beginSession();
     })();
   });
 
   controlsBox.appendChild(toggle);
 
-  // Presentation-mode buttons (上下对照 / 仅译文) — buttons instead of the old
-  // dropdown so every control in the pane is a button; disabled outside a
-  // session, active highlight synced to the handle's ACTUAL mode.
+  // Presentation-mode buttons (上下对照 / 仅译文), always enabled: with a live
+  // session they switch the presentation; without one they START a session
+  // directly in that mode — one click to 仅译文 instead of the old
+  // "enable bilingual first, then pick" two-step. The active highlight is
+  // synced to the handle's ACTUAL mode, and an explicit click is remembered
+  // as the start-up default for the next session.
   const mkModeBtn = (mode: BilingualMode, key: string): HTMLButtonElement => {
     const b = el(doc, "button", `${CLS}-mode-btn`) as HTMLButtonElement;
     b.type = "button";
     b.textContent = getString(key);
     b.dataset.mode = mode;
-    b.disabled = true;
     b.addEventListener("click", () => {
-      if (!active) return;
-      try {
-        active.handle.setMode(mode);
-        state.setMode(active.handle.getMode());
-      } catch (e) {
-        safeDebug("[Z-Transplit] bilingualControl setMode: " + e);
+      if (active) {
+        try {
+          active.handle.setMode(mode);
+          const actual = active.handle.getMode();
+          state.setMode(actual);
+          setPref("reader.bilingual.defaultMode", actual);
+        } catch (e) {
+          safeDebug("[Z-Transplit] bilingualControl setMode: " + e);
+        }
+        return;
       }
+      void beginSession(mode);
     });
     return b;
   };

@@ -8,7 +8,10 @@
  *   - behavior-F1：buildInterleave 失败回滚阅读模式，再点开关是重新开始
  *   - behavior-F3：退出双语 / 面板销毁停止朗读并复位 UI
  *   - behavior-F8：朗读译文从最顶可见块对应的段开始
- *   - 模式按钮与实际模式同步（defaultMode=transOnly），退出复位 interleave
+ *   - 模式按钮与实际模式同步（defaultMode=transOnly），显式点选写入偏好
+ *   - 一键直达：会话外点「仅译文」直接以该模式启动，选择被记住
+ *   - 点击后立即出现准备反馈（reader 解析等待期间不再沉默）
+ *   - 启动期间三个按钮禁用，结束后恢复可点（退出复位到存储的默认模式）
  *
  * speechSynthesis 用Fake：cancel/finish 的 onend 一律落在后续宏任务（与真实
  * 平台一致），因此 stale-onend 竞态在本测试中真实复现。
@@ -132,6 +135,7 @@ interface Ctx {
   statusText(): string;
   modeValue(): string;
   modeDisabled(): boolean;
+  storedMode(): unknown;
 }
 
 function setup(prefs: Record<string, unknown> = {}): Ctx {
@@ -184,20 +188,24 @@ function setup(prefs: Record<string, unknown> = {}): Ctx {
       String(doc.querySelector("button.ztransplit-bc-toggle")?.textContent ?? ""),
     statusText: () =>
       String(doc.querySelector(".ztransplit-bc-status")?.textContent ?? ""),
-    modeValue: () =>
-      String(
-        (
-          doc.querySelector(
-            "button.ztransplit-bc-mode-btn[data-active='true']",
-          ) as any
-        )?.dataset?.mode ?? "",
-      ),
-    modeDisabled: () => {
-      const btns = [
-        ...doc.querySelectorAll("button.ztransplit-bc-mode-btn"),
-      ] as HTMLButtonElement[];
-      return btns.length > 0 && btns.every((b) => b.disabled);
-    },
+  modeValue: () =>
+    String(
+      (
+        doc.querySelector(
+          "button.ztransplit-bc-mode-btn[data-active='true']",
+        ) as any
+      )?.dataset?.mode ?? "",
+    ),
+  /** 全部模式按钮处于禁用态（仅启动进行中为真）。 */
+  modeDisabled: () => {
+    const btns = [
+      ...doc.querySelectorAll("button.ztransplit-bc-mode-btn"),
+    ] as HTMLButtonElement[];
+    return btns.length > 0 && btns.every((b) => b.disabled);
+  },
+  /** 存储的启动默认模式（reader.bilingual.defaultMode 当前值）。 */
+  storedMode: () =>
+    z.prefs.get("extensions.zotero.ztransplit.reader.bilingual.defaultMode"),
   };
 }
 
@@ -343,7 +351,8 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(ctx.spoken()).toEqual(["T1"]); // 无新增语音
     expect(ctx.toggleText()).toContain("bilingual-enable");
     expect(ctx.modeValue()).toBe("interleave");
-    expect(ctx.modeDisabled()).toBe(true);
+    // 模式按钮始终可点（会话外点击 = 以该模式启动），只有启动进行中禁用。
+    expect(ctx.modeDisabled()).toBe(false);
   });
 
   it("behavior-F3：面板销毁停止原文朗读（无需会话）并移除样式", async () => {
@@ -387,20 +396,57 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(vi.mocked(exitBilingualSession)).toHaveBeenCalledTimes(1);
   });
 
-  it("模式按钮与实际模式同步（defaultMode=transOnly），退出复位", async () => {
+  it("模式按钮与实际模式同步（defaultMode=transOnly），显式点选写入偏好", async () => {
     ctx = setup({ "reader.bilingual.defaultMode": "transOnly" });
     h.handle = makeHandle();
     await toggleOn(ctx);
     expect(ctx.modeValue()).toBe("transOnly");
 
-    // 点「上下对照」→ 高亮与底层模式同步切换
+    // 点「上下对照」→ 高亮与底层模式同步切换，并被记住为下次的启动模式
     ctx.click("bilingual-mode-interleave");
     expect(ctx.modeValue()).toBe("interleave");
     expect(h.handle.setMode).toHaveBeenCalledWith("interleave");
+    expect(ctx.storedMode()).toBe("interleave");
 
     ctx.click("bilingual-exit");
     await flush();
+    // 退出复位到存储的默认模式（上面点选已把默认改写为 interleave）
     expect(ctx.modeValue()).toBe("interleave");
+    expect(ctx.modeDisabled()).toBe(false);
+  });
+
+  it("一键直达：会话外点「仅译文」直接以该模式启动并记住选择", async () => {
+    ctx = setup();
+    h.handle = makeHandle();
+    // 会话外模式按钮不再禁用
+    expect(ctx.modeDisabled()).toBe(false);
+    ctx.click("bilingual-mode-trans-only");
+    await flush();
+    expect(ctx.toggleText()).toContain("bilingual-exit");
+    expect(ctx.modeValue()).toBe("transOnly");
+    expect(h.handle.setMode).toHaveBeenCalledWith("transOnly");
+    expect(ctx.storedMode()).toBe("transOnly");
+  });
+
+  it("点击后立即出现准备反馈（reader 解析等待之前）", async () => {
+    ctx = setup();
+    h.handle = makeHandle();
+    ctx.click("bilingual-enable");
+    // 同步可见：不再是点击后数秒无响应
+    expect(ctx.statusText()).toContain("bilingual-sdt-loading");
+    await flush();
+    // 启动成功后状态行清空
+    expect(ctx.statusText()).toBe("");
+  });
+
+  it("启动期间三个按钮禁用，结束后恢复", async () => {
+    ctx = setup();
+    h.handle = makeHandle();
+    ctx.click("bilingual-enable");
     expect(ctx.modeDisabled()).toBe(true);
+    expect(ctx.button("bilingual-enable").disabled).toBe(true);
+    await flush();
+    expect(ctx.modeDisabled()).toBe(false);
+    expect(ctx.button("bilingual-exit").disabled).toBe(false);
   });
 });
