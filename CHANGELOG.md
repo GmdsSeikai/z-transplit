@@ -3,6 +3,39 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.0] - 2026-10-11
+
+### Added
+
+- Selection translation now flows through the same persistent paragraph cache
+  as the PDF pipeline and the bilingual view. Previously the selection path
+  only had the session-scoped in-memory LRU, so a paragraph you translated by
+  selecting it was re-translated by every later run; now an exact-text hit
+  answers from cache without a network call, and fresh selection results are
+  stored back under the shared key space (engine identity + auto-detected
+  source + target language), where the document pipelines and the bilingual
+  view pick them up. Dictionary-card word lookups stay ephemeral.
+- Translation-only mode gains a click-to-peek interaction: clicking a
+  translated paragraph temporarily reveals the original block right above it;
+  clicking the same block again (or another block, or the empty page) hides it
+  again. The peek is cleared on mode switches and on session exit, leaves the
+  original content untouched, and is suppressed while a text selection is
+  being dragged inside a block so copying translations keeps working. The
+  interleaved mode stays free of click behavior.
+
+### Changed
+
+- The bilingual mode buttons (上下对照 / 仅译文) are no longer disabled while
+  no session is live. Clicking one now starts the session directly in that
+  mode instead of requiring the "enable bilingual first, then pick a mode"
+  two-step, and an explicit click is remembered as the value of
+  `reader.bilingual.defaultMode`, so the next session starts in the mode last
+  used (previously the preference was read but never written). Leaving a
+  session resets the mode highlight to that remembered default rather than a
+  hardcoded interleaved. Clicking the bilingual toggle now shows the
+  "preparing the document structure" status immediately, closing the silent
+  gap during reader resolution that could last a few seconds.
+
 ## [1.7.2] - 2026-10-10
 
 ### Changed
