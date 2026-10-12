@@ -160,11 +160,11 @@ const PANE_CSS = `
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .${CLS}-source-text {
-  max-height: 11em; overflow-y: auto;
-  padding: 6px 8px;
-  border: var(--material-border-quinary, 1px solid rgba(127,127,127,0.25));
+  max-height: 16em; overflow-y: auto;
+  padding: 8px 10px;
+  border-inline-start: 3px solid var(--material-border-quinary, rgba(127,127,127,0.35));
   border-radius: 6px;
-  background: var(--material-background, transparent);
+  background: var(--fill-quinary, rgba(127,127,127,0.04));
   font-size: 0.92em; line-height: 1.45;
   white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   box-sizing: border-box;
@@ -250,11 +250,11 @@ const PANE_CSS = `
 }
 .${CLS}-result-idle { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .${CLS}-result-text {
-  max-height: 16em; overflow-y: auto;
-  padding: 6px 8px;
-  border: var(--material-border-quinary, 1px solid rgba(127,127,127,0.25));
+  max-height: 24em; overflow-y: auto;
+  padding: 8px 10px;
+  border-inline-start: 3px solid var(--accent-blue, #4072e5);
   border-radius: 6px;
-  background: var(--material-background, transparent);
+  background: var(--fill-quinary, rgba(127,127,127,0.08));
   font-size: 0.92em; line-height: 1.45;
   white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
   box-sizing: border-box;
@@ -1212,7 +1212,9 @@ export function mountTranslatePane(
   function handleLiveSelection(): void {
     if (destroyed) return;
     const text = resolveSelectionText(readSelection(doc, itemID));
-    if (!text) return; // 空态仍由手动刷新显式触发
+    // Always refresh on selection change: a cleared selection must drop the
+    // stale source text so the pane cannot keep showing a translation of text
+    // the user no longer has selected.
     if (text === sourceText) return;
     handleRefreshSelection();
   }
@@ -1377,6 +1379,21 @@ export function mountTranslatePane(
   selectionSyncTargets.add(syncTarget);
   ensureReaderSelectionSync();
 
+  // Polling fallback: the renderTextSelectionPopup event can miss some
+  // selection changes (e.g. keyboard selection, certain reader builds). A light
+  // 1-second poll catches those without racing the event-driven path (the
+  // handler early-returns when the text hasn't changed).
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  if (typeof setInterval === "function") {
+    pollTimer = setInterval(() => {
+      if (destroyed) return;
+      // Only poll when the reader is actually present — a background tab or
+      // closed window would otherwise spam debug logs.
+      if (!resolveCurrentReader(doc, itemID)) return;
+      handleLiveSelection();
+    }, 1000);
+  }
+
   // ── mount effect (leadero's useEffect(…, [])) ──
   const initial = readSelection(doc, itemID);
   lastRead = initial.kind;
@@ -1425,6 +1442,8 @@ export function mountTranslatePane(
       copyErrorTimer = null;
       if (syncTimer) clearTimeout(syncTimer);
       syncTimer = null;
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
       selectionSyncTargets.delete(syncTarget);
       for (const { target, type, handler } of listeners.splice(0)) {
         try {

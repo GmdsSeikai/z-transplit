@@ -329,9 +329,13 @@ export class ReaderPane implements ReaderPaneAdapter {
         }
       };
     } catch (e: any) {
+      // 带上侧别：两侧注入独立发生，只报一侧失败时能直接定位是哪一窗格
+      // 退回了 400ms 轮询慢路径。
       Zotero.debug?.(
-        "[Z-Transplit splitView] installScrollTrigger failed: " +
-          (toErrorMessage(e)),
+        "[Z-Transplit splitView] installScrollTrigger failed for " +
+          this.side +
+          " pane: " +
+          toErrorMessage(e),
       );
       return null;
     }

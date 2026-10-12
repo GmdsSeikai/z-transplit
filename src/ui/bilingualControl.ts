@@ -2,7 +2,7 @@
  * bilingualControl — the bilingual reading control block inside the reader
  * translate pane section.
  *
- * Renders a compact bar above the translate pane root: a bilingual toggle,
+ * Renders a compact bar below the translate pane: a bilingual toggle,
  * presentation-mode buttons (上下对照 interleave / 仅译文 translation-only),
  * progress and a status line. The mode buttons are always clickable — with a
  * live session they switch the presentation; without one they start a session
@@ -10,10 +10,10 @@
  * default. On hosts without the Zotero 10 SDT reading mode it renders a
  * capability disclosure instead of the controls.
  *
- * One live bilingual session per process: starting a session for another item
- * exits the previous one. The session (reading-mode overlay + injected
- * translation blocks) is disposed on pane destroy and on tab close — the
- * pane body is per-item, so destroy() is the natural cleanup hook.
+ * Session lifecycle is owned by `src/core/pdf/sdt/bilingualLauncher` so the
+ * reader context menu and the item-tree menu can start the same overlay
+ * without duplicating state. This module only wires the launcher to the
+ * sidebar DOM and reacts to external session changes via `onSessionChange`.
  *
  * @module ui/bilingualControl
  */
@@ -26,21 +26,12 @@ import { createAbortController } from "../utils/abort";
 import { resolveCurrentReader } from "./translatePane";
 import { probeReaderCapabilities } from "../core/capabilities";
 import {
-  enterBilingualSession,
-  exitBilingualSession,
-  type BilingualSession,
-} from "../core/pdf/sdt/sdtBridge";
-import {
-  buildInterleave,
-  type BilingualMode,
-  type InterleaveHandle,
-} from "../core/pdf/sdt/interleaveView";
-import {
-  createAIBatchTranslator,
-  createTranslator,
-  engineCacheIdentity,
-  supportsBatching,
-} from "../core/translation/translationEngines";
+  startBilingualSession,
+  stopBilingualSession,
+  getActiveSession,
+  getLastEngineError,
+  onSessionChange,
+} from "../core/pdf/sdt/bilingualLauncher";
 import {
   ReadAloudController,
   type ReadAloudSegment,
@@ -53,18 +44,45 @@ import {
   clearSegmentHighlight,
   followSegment,
 } from "../core/readAloud/pdfReaderTts";
+import {
+  engineCacheIdentity,
+} from "../core/translation/translationEngines";
 
 const CLS = "ztransplit-bc";
 
-interface SessionState {
-  itemID: number;
-  session: BilingualSession;
-  handle: InterleaveHandle;
-  abort: AbortController;
+interface ControlState {
+  doc: Document;
+  toggle: HTMLButtonElement;
+  modeButtons: {
+    interleave: HTMLButtonElement;
+    transOnly: HTMLButtonElement;
+  } | null;
+  progressLabel: HTMLElement;
+  status: HTMLElement;
+  controlsBox: HTMLElement;
+  readAloudBox: HTMLElement | null;
+  readAloudButtons: {
+    original: HTMLButtonElement;
+    translation: HTMLButtonElement;
+    pause: HTMLButtonElement;
+    prev: HTMLButtonElement;
+    next: HTMLButtonElement;
+    stop: HTMLButtonElement;
+  } | null;
+  setStatus(msg: string): void;
+  setProgress(msg: string): void;
+  setActive(activeNow: boolean): void;
+  setMode(mode: "interleave" | "transOnly"): void;
+  setReadAloudPlaying(playing: boolean): void;
+  refreshReadAloudButtons(): void;
 }
 
-/** The one live session (module scope: the reading-mode overlay is per tab). */
-let active: SessionState | null = null;
+export interface BilingualControlHandle {
+  destroy(): void;
+}
+
+/** Reader toolbar button state. */
+let readerToolbarHandler: ((event: any) => void) | null = null;
 
 const mounted = new WeakMap<HTMLElement, { destroy(): void }>();
 
@@ -90,7 +108,7 @@ function targetLanguageFor(): string {
 }
 
 /** The persisted start-up mode — anything unparsable falls back to interleave. */
-function storedDefaultMode(): BilingualMode {
+function storedDefaultMode(): "interleave" | "transOnly" {
   return (getPref("reader.bilingual.defaultMode") as string) === "transOnly"
     ? "transOnly"
     : "interleave";
@@ -102,44 +120,97 @@ function el(doc: Document, tag: string, cls?: string): HTMLElement {
   return e;
 }
 
+function svg(doc: Document, markup: string): SVGElement {
+  const el = doc.createRange().createContextualFragment(markup).querySelector("svg");
+  if (!el) throw new Error("svg markup did not contain an <svg> element");
+  return el as unknown as SVGElement;
+}
+
 function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
-  // Mounted on the pane body (translatePane's pattern) instead of the chrome
-  // document: it leaves with the pane, and destroy() removes it explicitly.
-  // One style per body — mountBilingualControl is idempotent per body, so no
-  // doc-wide id guard is needed (nor correct with several panes per document).
   const style = el(doc, "style");
   style.className = `${CLS}-style`;
   style.textContent = `
+.${CLS}-root {
+  display: flex; flex-direction: column; gap: 8px;
+  min-width: 15.5em;
+  font: inherit; color: var(--zotero-text-color, inherit);
+}
+.${CLS}-divider {
+  height: 1px; width: 100%;
+  background: var(--material-border-quinary, rgba(127,127,127,0.25));
+  margin: 2px 0;
+}
+.${CLS}-title {
+  font-size: 0.88em; font-weight: 600; opacity: 0.78;
+}
 .${CLS}-bar {
   display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
   min-width: 15.5em;
-  margin: 2px 0 8px 0; padding: 6px 8px;
+  margin: 0; padding: 6px 8px;
   border: var(--material-border-quinary, 1px solid rgba(127,127,127,0.25));
   border-radius: 5px;
   background: var(--material-background, transparent);
 }
-/* Every action is a button (bilingual toggle / interleave / translation-only /
-   read original / read translation). Active states use the brand crimson
-   #b5343a (logo.svg palette, a literal that does not drift with the theme) —
-   same family as the translate pane's primary buttons and word-card chips. */
-.${CLS}-ra-btn, .${CLS}-toggle, .${CLS}-mode-btn {
+/* When no bilingual session is active, mode buttons are dimmed to signal they
+   are not independently operable — they only take effect once the toggle is on. */
+.${CLS}-bar[data-session="false"] .${CLS}-mode-btn {
+  opacity: 0.5;
+}
+.${CLS}-toggle, .${CLS}-mode-btn, .${CLS}-ra-btn {
   font: inherit; cursor: pointer; padding: 2px 10px;
   border: 1px solid var(--material-border-quinary, rgba(127,127,127,0.35));
   border-radius: 4px; background: var(--material-background, transparent);
   color: var(--zotero-text-color, inherit);
   display: inline-flex; align-items: center; gap: 4px;
 }
-.${CLS}-ra-btn:hover, .${CLS}-toggle:hover, .${CLS}-mode-btn:hover:enabled {
+.${CLS}-toggle:hover, .${CLS}-mode-btn:hover:enabled, .${CLS}-ra-btn:hover:enabled {
   background: var(--fill-quinary, rgba(127,127,127,0.18));
 }
-.${CLS}-toggle[data-active="true"], .${CLS}-mode-btn[data-active="true"] {
+.${CLS}-toggle[data-active="false"] {
+  background: var(--material-background, transparent);
+  color: var(--zotero-text-color, inherit);
+  border-color: var(--material-border-quinary, rgba(127,127,127,0.35));
+}
+.${CLS}-toggle[data-active="true"] {
   background: #b5343a; color: #ffffff; border-color: #b5343a;
+}
+.${CLS}-mode-btn[data-active="true"] {
+  background: #b5343a; color: #ffffff; border-color: #b5343a;
+}
+.${CLS}-segmented {
+  display: inline-flex;
+  border: 1px solid var(--material-border-quinary, rgba(127,127,127,0.35));
+  border-radius: 4px;
+  overflow: hidden;
+}
+.${CLS}-segmented .${CLS}-mode-btn {
+  border: none;
+  border-radius: 0;
+  border-inline-end: 1px solid var(--material-border-quinary, rgba(127,127,127,0.35));
+}
+.${CLS}-segmented .${CLS}-mode-btn:last-child {
+  border-inline-end: none;
+}
+.${CLS}-mode-btn svg, .${CLS}-toggle svg {
+  width: 14px; height: 14px; display: block;
 }
 .${CLS}-ra-btn:disabled, .${CLS}-toggle:disabled, .${CLS}-mode-btn:disabled {
   opacity: 0.55; cursor: default;
 }
+/* hidden 属性依赖 UA 样式表的 display:none，但上面 .ra-btn 的
+   display:inline-flex 以更高的来源优先级覆盖了它——实测（2026-10-12 实机）
+   暂停/上一句/下一句/停止在未播放时全部可见。这条规则恢复 hidden 的语义。 */
+.${CLS}-ra-btn[hidden], .${CLS}-toggle[hidden], .${CLS}-mode-btn[hidden] {
+  display: none;
+}
 .${CLS}-progress { font-size: 0.88em; color: var(--zotero-text-color-secondary, GrayText); }
 .${CLS}-status { width: 100%; font-size: 0.88em; color: var(--zotero-text-color-secondary, GrayText); }
+.${CLS}-ra-box {
+  padding: 6px 8px;
+  border: var(--material-border-quinary, 1px solid rgba(127,127,127,0.25));
+  border-radius: 5px;
+  background: var(--fill-quinary, rgba(127,127,127,0.08));
+}
 .${CLS}-disclosure {
   margin: 2px 0 8px 0; padding: 6px 8px; font-size: 0.88em;
   border-inline-start: 3px solid var(--accent-gold, #cc9200);
@@ -150,47 +221,14 @@ function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
   return style as HTMLStyleElement;
 }
 
-async function makeBatchTranslator(
-  targetLanguage: string,
-): Promise<(texts: string[], signal?: AbortSignal) => Promise<{ translations: string[]; failedIndices: number[] }>> {
-  if (supportsBatching()) {
-    const handle = await createAIBatchTranslator(targetLanguage);
-    return (texts, signal) => handle.translate(texts, signal);
-  }
-  // Non-batching engines: sequential per-paragraph calls behind the same
-  // contract. The queue's own concurrency (2) bounds parallelism.
-  const translator = createTranslator(targetLanguage);
-  return async (texts, signal) => {
-    const translations: string[] = [];
-    const failedIndices: number[] = [];
-    for (let i = 0; i < texts.length; i++) {
-      if (signal?.aborted) break;
-      try {
-        translations.push(await translator(texts[i], targetLanguage));
-      } catch {
-        translations.push(texts[i]);
-        failedIndices.push(i);
-      }
-    }
-    return { translations, failedIndices };
-  };
-}
-
 async function startSession(
   state: ControlState,
   itemID?: number,
-  requestedMode?: BilingualMode,
+  requestedMode?: "interleave" | "transOnly",
 ): Promise<void> {
   safeDebug("[Z-Transplit] bilingualControl: startSession itemID=" + itemID);
-  // Immediate feedback, BEFORE reader resolution: that step can legitimately
-  // wait seconds (the retry loop below), and a silent click reads as a dead
-  // button — the 7.0.15 E2E showed the association can lag for ~a second.
   state.setStatus(getString("bilingual-sdt-loading"));
   let reader = resolveCurrentReader(state.doc, itemID);
-  // Reader↔tab association can lag the click (seen once in the 7.0.15 E2E:
-  // a reader was open but resolution returned null for ~a second, and the
-  // panel told the user to open a PDF that was already open). Retry briefly
-  // before disclosing a failure.
   for (let attempt = 0; !reader && attempt < 3; attempt++) {
     await new Promise((r) => setTimeout(r, 1200));
     reader = resolveCurrentReader(state.doc, itemID);
@@ -206,96 +244,62 @@ async function startSession(
     return;
   }
 
-  const session = await enterBilingualSession(reader);
-  safeDebug("[Z-Transplit] bilingualControl: session=" + !!session);
-  if (!session) {
-    // Null ≠ "unpack failed": the SDT session simply could not be established.
-    state.setStatus(getString("bilingual-sdt-missing"));
-    return;
+  const targetLanguage = targetLanguageFor();
+  let cacheIdentity: string | undefined;
+  try {
+    cacheIdentity = engineCacheIdentity();
+  } catch {
+    cacheIdentity = undefined;
   }
 
-  // Everything after the reading-mode enter must roll the mode back on
-  // failure — a half-built session would strand the reader in reading mode
-  // with the toggle showing "off", and the next click would enter all over
-  // again instead of restarting cleanly.
-  try {
-    // A session started while another was live (item switched) — dispose it.
-    if (active) await stopSession(state);
-
-    const abort = createAbortController();
-    const targetLanguage = targetLanguageFor();
-    const batchTranslate = await makeBatchTranslator(targetLanguage);
-
-    let cacheIdentity: string | undefined;
-    try {
-      cacheIdentity = engineCacheIdentity();
-    } catch {
-      cacheIdentity = undefined;
-    }
-
-    const handle = await buildInterleave(session, {
-      targetLanguage,
-      cacheIdentity,
-      batchTranslate,
-      signal: abort.signal,
-      onProgress: (stats) => {
+  const handle = await startBilingualSession({
+    reader,
+    itemID,
+    mode: requestedMode ?? storedDefaultMode(),
+    targetLanguage,
+    cacheIdentity,
+    onProgress: (stats) => {
+      // 失败段存在时说明引擎层面出了问题（网络不可达 / 密钥错误 / 限流），
+      // 只报「已译 N/M 段」会让用户面对一排「翻译中…」或灰字「翻译失败」
+      // 却无从判断原因（实机 2026-10-12：Google 端点不可达时整批静默）。
+      // 状态行升级为失败计数 + 最近一次引擎原因，失败段本身仍可点击重试。
+      if (stats.failed > 0) {
+        const reason =
+          getLastEngineError() || getString("translation-error-unknown");
+        state.setProgress(getString("bilingual-progress-failed", {
+          done: stats.done,
+          total: stats.total,
+          failed: stats.failed,
+          error: reason,
+        }));
+      } else {
         state.setProgress(getString("bilingual-progress", {
           done: stats.done,
           total: stats.total,
         }));
-        // Translations arriving is what unlocks 朗读译文 — nothing else runs
-        // between queue ticks (found in the 10.0.3 E2E: the button stayed
-        // disabled forever, so clicks on it never fired).
-        state.refreshReadAloudButtons();
-      },
-    });
-    // A direct mode-button entry wins over the stored default; both flow
-    // through setMode so the buttons mirror the ACTUAL mode either way
-    // (setMode's own click listener is the only other writer).
-    handle.setMode(requestedMode ?? storedDefaultMode());
-    if (requestedMode) {
-      // An explicit mode entry is the new start-up default — same contract as
-      // switching modes mid-session. Written only after the session took it.
-      setPref("reader.bilingual.defaultMode", requestedMode);
-    }
-    state.setMode(handle.getMode());
+      }
+      state.refreshReadAloudButtons();
+    },
+  });
 
-    active = { itemID: itemID ?? -1, session, handle, abort };
-    state.setActive(true);
-  } catch (e) {
-    // exitBilingualSession swallows its own errors — best-effort rollback.
-    await exitBilingualSession(session);
-    throw e;
+  if (!handle) {
+    state.setStatus(getString("bilingual-sdt-missing"));
+    return;
+  }
+
+  if (requestedMode) {
+    setPref("reader.bilingual.defaultMode", requestedMode);
   }
 }
 
 async function stopSession(state?: ControlState): Promise<void> {
-  const session = active;
-  active = null;
-  // Leaving / switching a session must also stop playback — the voice would
-  // otherwise keep reading a session that no longer exists (and, for the
-  // original source, keep playing with the controls already gone).
   stopReadAloudUI(state);
-  if (!session) return;
-  try {
-    session.abort.abort();
-  } catch {
-    /* ignore */
-  }
-  try {
-    await session.handle.dispose();
-  } catch (e) {
-    safeDebug("[Z-Transplit] bilingualControl stop: " + e);
-    await exitBilingualSession(session.session);
-  }
+  await stopBilingualSession();
 }
 
 // ── read-aloud wiring ───────────────────────────────────────────────────────
 
 function stopReadAloudUI(state?: ControlState): void {
-  // Bump first: any in-flight start bails on its next await tick. Re-entrant
-  // (controller.stop() fires onEnded → back here) — by then every handle is
-  // already cleared, so the nested call is a no-op.
   raGeneration++;
   const c = raController;
   raController = null;
@@ -311,9 +315,6 @@ function startReadAloud(
   itemID?: number,
 ): void {
   safeDebug("[Z-Transplit] bilingualControl: readAloud source=" + source);
-  // One audible flow at a time — raSource is set for the whole flow, including
-  // the async build window before raController exists (a long PDF builds
-  // segments for seconds). Same source again = stop; different = switch.
   const running = raSource;
   if (running) {
     stopReadAloudUI(state);
@@ -328,7 +329,7 @@ function startReadAloud(
     state.setStatus(getString("readaloud-unsupported"));
     return;
   }
-  if (source === "translation" && !active) return;
+  if (source === "translation" && !getActiveSession()) return;
 
   const rate = Number(getPref("readAloud.rate")) || 1;
   const voicePref = String(getPref("readAloud.voice") || "");
@@ -354,7 +355,6 @@ function startReadAloud(
         state.setStatus(getString("readaloud-start-failed", { error: toErrorMessage(e) }));
         return;
       }
-      // Superseded while building (stop, source switch, session teardown).
       if (gen !== raGeneration) return;
       if (segments.length === 0) {
         state.setStatus(getString("readaloud-no-content"));
@@ -379,7 +379,7 @@ function startReadAloud(
       onState();
     })();
   } else {
-    const handle = active?.handle;
+    const handle = getActiveSession()?.handle;
     if (!handle) {
       raSource = null;
       return;
@@ -391,8 +391,6 @@ function startReadAloud(
         raSource = null;
         return;
       }
-      // Start at the topmost visible block (currentRefPath's documented
-      // purpose) instead of always from the document head.
       const ref = handle.currentRefPath();
       const at = ref ? all.findIndex((s) => s.meta?.refPath === ref) : -1;
       const segments = at > 0 ? all.slice(at) : all;
@@ -423,44 +421,134 @@ function startReadAloud(
   }
 }
 
-interface ControlState {
-  doc: Document;
-  toggle: HTMLButtonElement;
-  /** 对照模式按钮（上下对照 / 仅译文）。始终可点：会话中切换显示，会话外以该模式直接启动。 */
-  modeButtons: {
-    interleave: HTMLButtonElement;
-    transOnly: HTMLButtonElement;
-  } | null;
-  progressLabel: HTMLElement;
-  status: HTMLElement;
-  controlsBox: HTMLElement;
-  readAloudBox: HTMLElement | null;
-  readAloudButtons: {
-    original: HTMLButtonElement;
-    translation: HTMLButtonElement;
-    pause: HTMLButtonElement;
-    prev: HTMLButtonElement;
-    next: HTMLButtonElement;
-    stop: HTMLButtonElement;
-  } | null;
-  setStatus(msg: string): void;
-  setProgress(msg: string): void;
-  setActive(activeNow: boolean): void;
-  /** Sync the mode buttons' active highlight with the session's actual mode. */
-  setMode(mode: BilingualMode): void;
-  setReadAloudPlaying(playing: boolean): void;
-  /** Re-evaluate the 朗读译文 enabled state (session live + text ready). */
-  refreshReadAloudButtons(): void;
+// ── reader toolbar button ───────────────────────────────────────────────────
+
+const TOOLBAR_BUTTON_CLASS = "ztransplit-bc-toolbar";
+const TOOLBAR_STYLE_ID = "ztransplit-bc-toolbar-style";
+
+const TOOLBAR_CSS = `
+.${TOOLBAR_BUTTON_CLASS} {
+  width: 20px; height: 20px; padding: 2px; cursor: pointer;
+  color: var(--zotero-text-color, inherit);
+}
+.${TOOLBAR_BUTTON_CLASS}:hover { background: rgba(127,127,127,0.2); }
+.${TOOLBAR_BUTTON_CLASS}:focus-visible {
+  outline: 2px solid var(--color-focus-border, #4072e5); outline-offset: -2px;
+}
+.${TOOLBAR_BUTTON_CLASS} svg { width: 16px; height: 16px; display: block; }
+`;
+
+function buildReaderToolbarButton(doc: Document): HTMLElement {
+  const head = doc.head ?? doc.documentElement;
+  if (head && !doc.getElementById(TOOLBAR_STYLE_ID)) {
+    const style = doc.createElement("style");
+    style.id = TOOLBAR_STYLE_ID;
+    style.textContent = TOOLBAR_CSS;
+    head.appendChild(style);
+  }
+
+  const button = doc.createElement("div");
+  button.className = TOOLBAR_BUTTON_CLASS;
+  button.setAttribute("role", "button");
+  button.setAttribute("tabindex", "0");
+  button.setAttribute("title", getString("bilingual-toolbar-tooltip"));
+  button.setAttribute("aria-label", getString("bilingual-toolbar-tooltip"));
+  button.innerHTML = [
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">',
+    '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">',
+    '<path d="M3 5h14"/>',
+    '<path d="M3 10h14"/>',
+    '<path d="M7 13l-3 2 3 2"/>',
+    '<path d="M13 13l3 2-3 2"/>',
+    "</g></svg>",
+  ].join("");
+
+  const toggle = () => {
+    const win =
+      (globalThis as any)?.Zotero?.getMainWindow?.() ??
+      (doc.defaultView as any)?.Zotero?.getMainWindow?.();
+    const Zotero = win?.Zotero ?? (globalThis as any).Zotero;
+    const Reader = Zotero?.Reader;
+    const Zotero_Tabs = win?.Zotero_Tabs ?? Zotero?.Tabs;
+    const tabID = Zotero_Tabs?.selectedID;
+    const reader = Reader?.getByTabID?.(tabID);
+    const itemID = reader?.itemID;
+
+    if (getActiveSession() && itemID === getActiveSession()?.itemID) {
+      stopReadAloudUI();
+      void stopBilingualSession();
+    } else if (reader) {
+      const lang =
+        (getPrefDynamic("translate.targetLanguage") as string | undefined) ??
+        "zh-CN";
+      let cacheIdentity: string | undefined;
+      try {
+        cacheIdentity = engineCacheIdentity();
+      } catch {
+        cacheIdentity = undefined;
+      }
+      void startBilingualSession({
+        reader,
+        itemID: itemID ?? -1,
+        mode: storedDefaultMode(),
+        targetLanguage: lang,
+        cacheIdentity,
+      });
+    }
+  };
+  button.addEventListener("click", toggle);
+  button.addEventListener("keydown", (event: KeyboardEvent) => {
+    if (event.isComposing) return;
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      toggle();
+    }
+  });
+  return button;
 }
 
-export interface BilingualControlHandle {
-  destroy(): void;
+export function registerBilingualReaderToolbar(): void {
+  const Reader = (globalThis as any)?.Zotero?.Reader;
+  if (!Reader || typeof Reader.registerEventListener !== "function") return;
+  const pluginID = addonID();
+
+  readerToolbarHandler = (event: any) => {
+    try {
+      const { doc, append } = event;
+      if (!doc || typeof append !== "function") return;
+      append(buildReaderToolbarButton(doc));
+    } catch (e) {
+      safeDebug("[Z-Transplit] bilingualControl: reader toolbar button build failed: " + e);
+    }
+  };
+  Reader.registerEventListener("renderToolbar", readerToolbarHandler, pluginID);
 }
 
-/**
- * Mount the bilingual control block into a section body (idempotent per body).
- * Callers (registerTranslateUI.onRender) invoke this next to mountTranslatePane.
- */
+export function unregisterBilingualReaderToolbar(): void {
+  const Reader = (globalThis as any)?.Zotero?.Reader;
+  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
+  if (readerToolbarHandler) {
+    try {
+      Reader.unregisterEventListener("renderToolbar", readerToolbarHandler);
+    } catch (e) {
+      safeDebug("[Z-Transplit] bilingualControl: unregister toolbar failed: " + e);
+    }
+    readerToolbarHandler = null;
+  }
+}
+
+function addonID(): string {
+  try {
+    const fromData = (globalThis as any)?.addon?.data?.config?.addonID;
+    if (fromData) return fromData;
+  } catch {
+    /* no addon global (node) — fall through to the config import */
+  }
+  return (globalThis as any).addon?.data?.config?.addonID ?? "ztransplit@zotero.org";
+}
+
+// ── mount / destroy ─────────────────────────────────────────────────────────
+
 export function mountBilingualControl(options: {
   doc: Document;
   body: HTMLElement;
@@ -474,10 +562,19 @@ export function mountBilingualControl(options: {
 
   const root = el(doc, "div", `${CLS}-root`);
 
+  const divider = el(doc, "div", `${CLS}-divider`);
+  root.appendChild(divider);
+
+  const title = el(doc, "div", `${CLS}-title`);
+  title.textContent = getString("bilingual-section-title");
+  root.appendChild(title);
+
   const controlsBox = el(doc, "div", `${CLS}-bar`);
-  const toggle = el(doc, "button", `${CLS}-toggle ${CLS}-main`) as HTMLButtonElement;
+  controlsBox.dataset.session = "false";
+  const toggle = el(doc, "button", `${CLS}-toggle`) as HTMLButtonElement;
   toggle.type = "button";
   toggle.textContent = getString("bilingual-enable");
+  toggle.dataset.active = "false";
 
   let modeButtons: ControlState["modeButtons"] = null;
   const progressLabel = el(doc, "span", `${CLS}-progress`);
@@ -500,20 +597,19 @@ export function mountBilingualControl(options: {
     },
     setActive(activeNow) {
       toggle.dataset.active = String(activeNow);
+      controlsBox.dataset.session = String(activeNow);
       toggle.textContent = getString(
         activeNow ? "bilingual-exit" : "bilingual-enable",
       );
-      if (modeButtons && !activeNow) {
-        // Leaving a session: reset the highlight to the mode the NEXT session
-        // will start in (the stored default), so it stays truthful — the mode
-        // buttons are always enabled now and mean "start in this mode" when
-        // no session is live.
-        state.setMode(storedDefaultMode());
+      // When no session is active, clear the mode highlight so the bar does not
+      // imply a mode is selected; the buttons remain clickable and each click
+      // starts a session directly in that mode.
+      if (!activeNow && modeButtons) {
+        modeButtons.interleave.dataset.active = "false";
+        modeButtons.transOnly.dataset.active = "false";
       }
       state.refreshReadAloudButtons();
       if (activeNow) {
-        // Entering: drop the "preparing structure" loading notice — progress
-        // now comes from the queue's onProgress.
         state.setStatus("");
       } else {
         state.setProgress("");
@@ -543,19 +639,16 @@ export function mountBilingualControl(options: {
   };
 
   function sourceHasTranslation(): boolean {
-    return !!active && active.handle.translatedReadSegments().length > 0;
+    const session = getActiveSession();
+    return !!session && session.handle.translatedReadSegments().length > 0;
   }
 
-  /** 朗读译文 is enabled only while a session has translated text ready. */
   function refreshTranslationButton(): void {
     const b = state.readAloudButtons;
     if (!b) return;
-    b.translation.disabled = !active || !sourceHasTranslation();
+    b.translation.disabled = !getActiveSession() || !sourceHasTranslation();
   }
 
-  // Startup is exclusive: the toggle and both mode buttons share one flow, so
-  // a starting session briefly disables all three instead of allowing a
-  // second entry to race the first.
   let starting = false;
   const setStarting = (v: boolean): void => {
     starting = v;
@@ -566,15 +659,13 @@ export function mountBilingualControl(options: {
     }
   };
 
-  const beginSession = async (requestedMode?: BilingualMode): Promise<void> => {
+  const beginSession = async (requestedMode?: "interleave" | "transOnly"): Promise<void> => {
     if (starting) return;
     setStarting(true);
     try {
       await startSession(state, options.itemID, requestedMode);
     } catch (e) {
       safeDebug("[Z-Transplit] bilingualControl toggle: " + e);
-      // setActive first — it clears the status line, and the error must be
-      // the thing the user ends up reading.
       state.setActive(false);
       state.setStatus(getString("bilingual-sdt-unpack-failed", {
         error: toErrorMessage(e),
@@ -586,9 +677,8 @@ export function mountBilingualControl(options: {
 
   toggle.addEventListener("click", () => {
     void (async () => {
-      if (active) {
+      if (getActiveSession()) {
         await stopSession(state);
-        state.setActive(false);
         return;
       }
       await beginSession();
@@ -597,22 +687,23 @@ export function mountBilingualControl(options: {
 
   controlsBox.appendChild(toggle);
 
-  // Presentation-mode buttons (上下对照 / 仅译文), always enabled: with a live
-  // session they switch the presentation; without one they START a session
-  // directly in that mode — one click to 仅译文 instead of the old
-  // "enable bilingual first, then pick" two-step. The active highlight is
-  // synced to the handle's ACTUAL mode, and an explicit click is remembered
-  // as the start-up default for the next session.
-  const mkModeBtn = (mode: BilingualMode, key: string): HTMLButtonElement => {
+  const segmented = el(doc, "span", `${CLS}-segmented`);
+
+  const mkModeBtn = (mode: "interleave" | "transOnly", key: string, iconMarkup: string): HTMLButtonElement => {
     const b = el(doc, "button", `${CLS}-mode-btn`) as HTMLButtonElement;
     b.type = "button";
     b.textContent = getString(key);
     b.dataset.mode = mode;
+    const icon = svg(doc, iconMarkup);
+    if (icon) {
+      icon.setAttribute("aria-hidden", "true");
+      b.insertBefore(icon, b.firstChild);
+    }
     b.addEventListener("click", () => {
-      if (active) {
+      if (getActiveSession()) {
         try {
-          active.handle.setMode(mode);
-          const actual = active.handle.getMode();
+          getActiveSession()!.handle.setMode(mode);
+          const actual = getActiveSession()!.handle.getMode();
           state.setMode(actual);
           setPref("reader.bilingual.defaultMode", actual);
         } catch (e) {
@@ -624,18 +715,38 @@ export function mountBilingualControl(options: {
     });
     return b;
   };
-  const interleaveBtn = mkModeBtn("interleave", "bilingual-mode-interleave");
-  const transOnlyBtn = mkModeBtn("transOnly", "bilingual-mode-trans-only");
+
+  const interleaveBtn = mkModeBtn(
+    "interleave",
+    "bilingual-mode-interleave",
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">' +
+    '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M3 5h14"/><path d="M3 10h14"/>' +
+    '<path d="M10 7v6"/><path d="M7 10l-3 2 3 2"/>' +
+    '<path d="M13 10l3 2-3 2"/>' +
+    "</g></svg>",
+  );
+  const transOnlyBtn = mkModeBtn(
+    "transOnly",
+    "bilingual-mode-trans-only",
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">' +
+    '<g fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' +
+    '<path d="M3 5h14"/>' +
+    '<path d="M10 7v8"/>' +
+    '<path d="M7 15l3 2 3-2"/>' +
+    "</g></svg>",
+  );
+  segmented.appendChild(interleaveBtn);
+  segmented.appendChild(transOnlyBtn);
   modeButtons = { interleave: interleaveBtn, transOnly: transOnlyBtn };
   state.modeButtons = modeButtons;
-  controlsBox.appendChild(interleaveBtn);
-  controlsBox.appendChild(transOnlyBtn);
+
+  controlsBox.appendChild(segmented);
   controlsBox.appendChild(progressLabel);
 
-  // ── read-aloud row ──────────────────────────────────────────────────────
   let readAloudButtons: ControlState["readAloudButtons"] = null;
   try {
-    const raBox = el(doc, "div", `${CLS}-bar`);
+    const raBox = el(doc, "div", `${CLS}-ra-box`);
     const mkBtn = (key: string): HTMLButtonElement => {
       const b = el(doc, "button", `${CLS}-ra-btn`) as HTMLButtonElement;
       b.type = "button";
@@ -689,14 +800,23 @@ export function mountBilingualControl(options: {
   root.appendChild(status);
   body.appendChild(root);
 
+  const unsubscribe = onSessionChange(() => {
+    const session = getActiveSession();
+    if (session) {
+      state.setActive(true);
+      state.setMode(session.handle.getMode());
+    } else {
+      state.setActive(false);
+    }
+    state.refreshReadAloudButtons();
+  });
+
   const handle: BilingualControlHandle = {
     destroy() {
       mounted.delete(body);
-      // Stop playback and tear the session down even when this pane did not
-      // start them — the module state is process-wide, and once the buttons
-      // are gone nothing could stop a still-playing voice. The UI update in
-      // stopReadAloudUI may already target detached buttons — harmless.
-      void stopSession(state);
+      unsubscribe();
+      stopReadAloudUI(state);
+      void stopBilingualSession();
       try {
         root.remove();
       } catch {
@@ -715,5 +835,6 @@ export function mountBilingualControl(options: {
 
 /** Exit a live session without touching any pane DOM (shutdown hook). */
 export async function disposeActiveBilingualSession(): Promise<void> {
-  await stopSession();
+  stopReadAloudUI();
+  await stopBilingualSession();
 }

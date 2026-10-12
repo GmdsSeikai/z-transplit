@@ -65,6 +65,7 @@ async function onStartup() {
     const mod = await import("./core/pdf/splitview/splitViewFactory");
     mod.registerSplitViewMenu();
     mod.registerOpenDataLoaderMenu();
+    mod.registerBilingualReaderMenu();
   } catch (e) {
     safeDebug(
       `[Z-Transplit] ./core/pdf/splitview/splitViewFactory unavailable: ${toErrorMessage(e)}`,
@@ -179,6 +180,7 @@ async function onShutdown() {
     const mod = await import("./core/pdf/splitview/splitViewFactory");
     mod.unregisterSplitViewMenu();
     mod.unregisterOpenDataLoaderMenu();
+    mod.unregisterBilingualReaderMenu();
   } catch (e) {
     safeDebug(
       `[Z-Transplit] ./core/pdf/splitview/splitViewFactory unavailable on shutdown: ${toErrorMessage(e)}`,

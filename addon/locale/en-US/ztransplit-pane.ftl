@@ -90,6 +90,7 @@ bilingual-mode-interleave = Interleaved (original + translation)
 bilingual-mode-trans-only = Translation only
 bilingual-peek-hint = Click to show the original text of this paragraph
 bilingual-progress = { $done }/{ $total } paragraphs translated
+bilingual-progress-failed = { $done }/{ $total } paragraphs translated, { $failed } failed: { $error } (click a failed paragraph to retry)
 bilingual-placeholder = Translating…
 bilingual-block-failed = Translation failed
 bilingual-retry = Retry
@@ -97,6 +98,8 @@ bilingual-sdt-loading = Preparing the document structure…
 bilingual-sdt-unavailable = Bilingual reading requires the Zotero 10 reading mode. Still available here: side-by-side split view and full-text translation to attachment.
 bilingual-sdt-missing = The document-structure session could not be established; bilingual reading is unavailable. The split view and full-text translation remain available.
 bilingual-sdt-unpack-failed = The document structure is unavailable ({ $error }). The split view and full-text translation remain available.
+bilingual-toolbar-tooltip = Toggle bilingual overlay
+bilingual-section-title = Bilingual reading
 
 ## ─── Read aloud (src/core/readAloud/) ──────────────────────────────────────
 readaloud-original = Read original

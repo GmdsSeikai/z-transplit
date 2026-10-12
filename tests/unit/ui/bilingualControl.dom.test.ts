@@ -134,6 +134,7 @@ interface Ctx {
   toggleText(): string;
   statusText(): string;
   modeValue(): string;
+  modeHighlighted(): number;
   modeDisabled(): boolean;
   storedMode(): unknown;
 }
@@ -196,6 +197,10 @@ function setup(prefs: Record<string, unknown> = {}): Ctx {
         ) as any
       )?.dataset?.mode ?? "",
     ),
+  /** 当前处于高亮态的模式按钮数量（无会话时应为 0：无高亮即无歧义）。 */
+  modeHighlighted: () =>
+    doc.querySelectorAll("button.ztransplit-bc-mode-btn[data-active='true']")
+      .length,
   /** 全部模式按钮处于禁用态（仅启动进行中为真）。 */
   modeDisabled: () => {
     const btns = [
@@ -337,7 +342,7 @@ describe("双语控制条：会话与面板生命周期", () => {
     ctx = undefined;
   });
 
-  it("behavior-F3：退出双语停止朗读，按钮复位、模式复位 interleave", async () => {
+  it("behavior-F3：退出双语停止朗读，按钮复位、模式高亮清除", async () => {
     ctx = setup();
     h.handle = makeHandle();
     await toggleOn(ctx);
@@ -350,7 +355,10 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(ctx.playingVisible()).toBe(false);
     expect(ctx.spoken()).toEqual(["T1"]); // 无新增语音
     expect(ctx.toggleText()).toContain("bilingual-enable");
-    expect(ctx.modeValue()).toBe("interleave");
+    // 无会话时不再回写默认模式高亮：无高亮 = 「模式跟随下次启动的选择」，
+    // 模式按钮保持半透明可点（点击 = 以该模式直启）。
+    expect(ctx.modeHighlighted()).toBe(0);
+    expect(ctx.modeValue()).toBe("");
     // 模式按钮始终可点（会话外点击 = 以该模式启动），只有启动进行中禁用。
     expect(ctx.modeDisabled()).toBe(false);
   });
@@ -410,8 +418,10 @@ describe("双语控制条：会话与面板生命周期", () => {
 
     ctx.click("bilingual-exit");
     await flush();
-    // 退出复位到存储的默认模式（上面点选已把默认改写为 interleave）
-    expect(ctx.modeValue()).toBe("interleave");
+    // 退出清除模式高亮（无会话 = 无高亮）；存储的默认模式保持 interleave 不变
+    expect(ctx.modeHighlighted()).toBe(0);
+    expect(ctx.modeValue()).toBe("");
+    expect(ctx.storedMode()).toBe("interleave");
     expect(ctx.modeDisabled()).toBe(false);
   });
 

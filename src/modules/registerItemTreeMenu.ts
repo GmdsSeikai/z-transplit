@@ -39,6 +39,7 @@ import {
   findExistingTranslation,
   findTranslationByRelation,
 } from "../core/pdf/splitview/splitViewCleanup";
+import { startBilingualSessionByItemID } from "../core/pdf/sdt/bilingualLauncher";
 
 const MENU_ID = "ztransplit-itemmenu";
 const SEP_ID = "ztransplit-itemmenu-sep";
@@ -326,9 +327,43 @@ function injectIntoWindow(win: any): boolean {
         void runPipelines(win, resolveAllSourcePdfAttachments(items), "split");
       },
     );
+    const interleaveItem = mkItem(
+      "ztransplit-itemmenu-interleave",
+      "itemtree-interleave",
+      async () => {
+        const zp = win.ZoteroPane || win.wrappedJSObject?.ZoteroPane;
+        const items: any[] = zp?.itemsView?.getSelectedItems?.() || [];
+        const source = resolveSourcePdfAttachment(items);
+        if (!source) return;
+        await openAttachmentOrAlert(win, source.id);
+        await startBilingualSessionByItemID({
+          win,
+          itemID: source.id,
+          mode: "interleave",
+        });
+      },
+    );
+    const transOnlyItem = mkItem(
+      "ztransplit-itemmenu-trans-only",
+      "itemtree-trans-only",
+      async () => {
+        const zp = win.ZoteroPane || win.wrappedJSObject?.ZoteroPane;
+        const items: any[] = zp?.itemsView?.getSelectedItems?.() || [];
+        const source = resolveSourcePdfAttachment(items);
+        if (!source) return;
+        await openAttachmentOrAlert(win, source.id);
+        await startBilingualSessionByItemID({
+          win,
+          itemID: source.id,
+          mode: "transOnly",
+        });
+      },
+    );
 
     menupopup.appendChild(translateAttachment);
     menupopup.appendChild(translateSplit);
+    menupopup.appendChild(interleaveItem);
+    menupopup.appendChild(transOnlyItem);
 
     const separator = doc.createXULElement("menuseparator");
     separator.id = SEP_ID;

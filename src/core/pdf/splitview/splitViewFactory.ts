@@ -31,11 +31,19 @@
 
 import type { SplitTabState, ReaderPaneAdapter, SplitSide } from "./types";
 import { getString } from "../../../utils/locale";
+import { getPrefDynamic } from "../../../utils/prefs";
 import { createReaderBrowser, ReaderPane } from "./readerPaneAdapter";
 import { safeDebug } from "../../../utils/logger";
 import { toErrorMessage } from "../../../utils/error";
 import { alertDialog } from "../../../utils/dialog";
 import { createAbortController } from "../../../utils/abort";
+import {
+  startBilingualSession,
+  stopBilingualSession,
+} from "../sdt/bilingualLauncher";
+import {
+  engineCacheIdentity,
+} from "../../translation/translationEngines";
 // 结构化的解析错误分类（reason 字段）——isJavaMissingCause 优先读它，
 // 避免对本地化/被重包装过的错误文本做正则猜测。纯 TS 类，无宿主依赖。
 import { PdfParseError } from "../PdfParseError";
@@ -368,16 +376,15 @@ function installResizer(state: SplitTabState): void {
     if (!dragging) return;
     dragging = false;
     state.resizer.classList.remove("dragging");
-    // Resume sync after a short delay, re-priming the scroll baselines so the
-    // pause-time delta (and any pdf.js reflow from the width change) doesn't
-    // surge through and yank a pane.
+    // Resume sync shortly after drag end, re-priming baselines so the width-
+    // change reflow delta doesn't surge through and yank a pane.
     trackTimeout(
       state,
       () => {
         state.syncPaused = false;
         primeSyncBaselines(state);
       },
-      200,
+      100,
     );
   };
 
@@ -1021,6 +1028,144 @@ export function unregisterOpenDataLoaderMenu(): void {
       zoteroDebug("[Z-Transplit odl] menu unregister error: " + e);
     }
     _openDataLoaderMenuHandler = null;
+  }
+}
+
+/**
+ * Handler kept at module scope so unregisterBilingualReaderMenu() can revoke it
+ * by reference via Reader.unregisterEventListener.
+ */
+let _bilingualReaderMenuHandler: ((event: any) => void) | null = null;
+
+/**
+ * Register 「上下对照」 and 「仅译文」 items in the reader's blank-area context
+ * menu. They reuse the shared bilingual launcher so the sidebar and the
+ * right-click path always drive the same overlay.
+ */
+export function registerBilingualReaderMenu(): void {
+  const Reader = (Zotero as any).Reader;
+  if (!Reader || typeof Reader.registerEventListener !== "function") return;
+  const pluginID = addonID();
+
+  try {
+    _bilingualReaderMenuHandler = (event: any) => {
+      const { reader, append } = event;
+      if (!append || !reader) return;
+
+      append({
+        label: getString("splitview-menu-interleave"),
+        onCommand: async () => {
+          await launchBilingualFromReader(reader, "interleave");
+        },
+      });
+      append({
+        label: getString("splitview-menu-trans-only"),
+        onCommand: async () => {
+          await launchBilingualFromReader(reader, "transOnly");
+        },
+      });
+    };
+    Reader.registerEventListener(
+      "createViewContextMenu",
+      _bilingualReaderMenuHandler,
+      pluginID,
+    );
+  } catch (e) {
+    zoteroDebug("[Z-Transplit] bilingual reader menu registration error: " + e);
+  }
+}
+
+/** Revoke the bilingual reader context-menu listener. Best-effort. */
+export function unregisterBilingualReaderMenu(): void {
+  const Reader = (Zotero as any).Reader;
+  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
+  if (_bilingualReaderMenuHandler) {
+    try {
+      Reader.unregisterEventListener(
+        "createViewContextMenu",
+        _bilingualReaderMenuHandler,
+      );
+    } catch (e) {
+      zoteroDebug("[Z-Transplit] bilingual reader menu unregister error: " + e);
+    }
+    _bilingualReaderMenuHandler = null;
+  }
+}
+
+let _bilingualMenuBusy = false;
+
+async function launchBilingualFromReader(reader: any, mode: "interleave" | "transOnly"): Promise<void> {
+  if (_bilingualMenuBusy) return;
+  _bilingualMenuBusy = true;
+  try {
+    const itemID = reader?.itemID;
+    if (!itemID) {
+      alertDialog(
+        getString("app-title"),
+        getString("itemtree-launch-no-reader"),
+      );
+      return;
+    }
+
+    const win = (Zotero as any).getMainWindow?.() || null;
+    let progress: any = null;
+    try {
+      progress = new (Zotero as any).ProgressWindow({ window: win });
+      progress.changeHeadline(getString("app-title"));
+      progress.addDescription(getString("itemtree-launch-progress"));
+      progress.show();
+
+      const lang =
+        (getPrefDynamic("translate.targetLanguage") as string | undefined) ??
+        "zh-CN";
+      let cacheIdentity: string | undefined;
+      try {
+        cacheIdentity = engineCacheIdentity();
+      } catch {
+        cacheIdentity = undefined;
+      }
+
+      const handle = await startBilingualSession({
+        reader,
+        itemID,
+        mode,
+        targetLanguage: lang,
+        cacheIdentity,
+        onProgress: (stats) => {
+          try {
+            progress.addDescription(
+              getString("bilingual-progress", {
+                done: stats.done,
+                total: stats.total,
+              }),
+            );
+            progress.show();
+          } catch {
+            /* progress window closed */
+          }
+        },
+      });
+
+      if (!handle) {
+        progress.addDescription(getString("bilingual-sdt-missing"));
+        progress.startCloseTimer?.(6000);
+        return;
+      }
+
+      progress.addDescription(getString("itemtree-launch-done"));
+      progress.startCloseTimer?.(3000);
+    } catch (e: any) {
+      safeDebug("[Z-Transplit] bilingual reader menu launch failed: " + e);
+      try {
+        progress?.addDescription("✗ " + toErrorMessage(e));
+        progress?.startCloseTimer?.(8000);
+      } catch {
+        /* best-effort */
+      }
+      await stopBilingualSession();
+    }
+  } finally {
+    _bilingualMenuBusy = false;
   }
 }
 

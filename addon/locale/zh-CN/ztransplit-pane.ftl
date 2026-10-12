@@ -89,6 +89,7 @@ bilingual-mode-interleave = 上下对照
 bilingual-mode-trans-only = 仅译文
 bilingual-peek-hint = 点击查看本段原文
 bilingual-progress = 已译 { $done }/{ $total } 段
+bilingual-progress-failed = 已译 { $done }/{ $total } 段，{ $failed } 段失败：{ $error }（可点击失败段落重试）
 bilingual-placeholder = 翻译中…
 bilingual-block-failed = 翻译失败
 bilingual-retry = 重试
@@ -96,6 +97,8 @@ bilingual-sdt-loading = 正在准备文档结构…
 bilingual-sdt-unavailable = 双语对照需要 Zotero 10 的阅读模式。当前版本可用：分屏对照（左右）、全文翻译附件。
 bilingual-sdt-missing = 文档结构会话未能建立，双语对照暂不可用。分屏对照与全文翻译仍可使用。
 bilingual-sdt-unpack-failed = 文档结构不可用（{ $error }）。分屏对照与全文翻译仍可使用。
+bilingual-toolbar-tooltip = 切换双语阅读
+bilingual-section-title = 双语阅读
 
 ## ─── 朗读（src/core/readAloud/）───────────────────────────────────────────
 readaloud-original = 朗读原文

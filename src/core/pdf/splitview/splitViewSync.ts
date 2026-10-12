@@ -129,7 +129,7 @@ export const NAMED_ZOOM_MODES = new Set([
  * a wrong position and (b) its delayed settle events escape the one-tick
  * mirrorGuard and ping-pong back. Pause, let it settle, re-prime baselines.
  */
-export const ZOOM_SETTLE_MS = 350;
+export const ZOOM_SETTLE_MS = 200;
 
 /**
  * Schedule one doSyncCheck on the next animation frame (16ms debounce). Scroll
@@ -240,11 +240,14 @@ export function doSyncCheck(state: SplitTabState): void {
     target.setScrollFraction(src);
     if (srcH != null) target.setHScrollFraction?.(srcH);
   } finally {
-    // Clear on the next tick so the target's scroll event (fired synchronously
-    // by setting scrollTop) is caught by the guard.
-    (state.win as any).setTimeout(() => {
-      state.mirrorGuard = false;
-    }, 0);
+  // Clear on the next tick so the target's scroll event (fired synchronously
+  // by setting scrollTop) is caught by the guard. Use a short delay instead
+  // of 0 so pdf.js's internal ScrollManager stabilization (which can re-anchor
+  // scrollTop a few ms after the write) is also silenced, avoiding a ping-pong
+  // back to the source pane.
+  (state.win as any).setTimeout(() => {
+    state.mirrorGuard = false;
+  }, 50);
   }
   // Re-baseline BOTH sides to the source fractions: the target is now at `src`
   // (we just set it), so recording `src` for it prevents the next check from

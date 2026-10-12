@@ -185,7 +185,15 @@ describe("B16 阅读器翻译面板：选区与自动翻译", () => {
     ctx = setup({ ...ENGINE_PREFS, "translate.auto": true }, ["hello"]);
     routeOK(ctx.fm);
     mountTranslatePane({ doc: ctx.doc, body: ctx.body });
-    await flush();
+
+    // Auto-translation runs at mount time and must survive parallel-suite timing:
+    // wait for the actual fetch (lazy module import + cacheKey + network) instead
+    // of a single fixed tick.
+    const deadline = Date.now() + 2000;
+    while (ctx.fm.calls.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+
     expect(ctx.fm.calls.length).toBe(1);
     expect(ctx.fm.calls[0].url).toContain("127.0.0.1");
     expect(ctx.text(ctx.body)).toContain("译文");

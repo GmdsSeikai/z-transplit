@@ -55,6 +55,8 @@ readiness-reason-unknown = 未知原因
 ## 分屏菜单（src/core/pdf/splitview/splitViewFactory.ts）
 splitview-menu-compare = 分屏对照（不翻译）
 splitview-menu-translate = 翻译并分屏打开
+splitview-menu-interleave = 上下对照双语阅读
+splitview-menu-trans-only = 仅译文双语阅读
 splitview-menu-cancel = 取消进行中的翻译
 
 ## OpenDataLoader 流水线错误（src/core/pdf/splitview/splitViewFactory.ts）
@@ -92,6 +94,11 @@ itemtree-progress-attachment = Z-Transplit: 正在翻译全文…
 itemtree-dedup-open = 检测到已有译文附件，直接打开。
 itemtree-split-reuse = 检测到已有译文附件，直接分屏打开。
 itemtree-open-failed = 无法自动打开译文附件，请在该条目下手动打开。
+itemtree-interleave = 上下对照双语阅读
+itemtree-trans-only = 仅译文双语阅读
+itemtree-launch-progress = Z-Transplit: 正在准备双语阅读…
+itemtree-launch-done = 双语阅读已就绪
+itemtree-launch-no-reader = 无法确定当前阅读器，请重新打开该 PDF 后重试。
 
 ## Java 运行时安装流程（splitViewFactory / JavaRuntimeManager）
 java-dialog-title = 需要安装 Java

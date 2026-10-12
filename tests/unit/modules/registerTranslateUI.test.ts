@@ -29,13 +29,13 @@ describe("B16b registerTranslateUI：注册门控", () => {
   });
 
   afterEach(() => {
-    unregisterTranslateUI();
+    void unregisterTranslateUI();
     z.uninstall();
   });
 
-  it("enabled + 引擎就绪 → 注册成功且记录 pane 配置", () => {
+  it("enabled + 引擎就绪 → 注册成功且记录 pane 配置", async () => {
     z.prefs.load(READY_PREFS, PREFIX);
-    expect(registerTranslateUI()).toBe(true);
+    expect(await registerTranslateUI()).toBe(true);
     expect(z.registeredPanes).toHaveLength(1);
     const pane = z.registeredPanes[0];
     expect(pane.paneID).toBe(TRANSLATE_PANE_ID);
@@ -46,13 +46,13 @@ describe("B16b registerTranslateUI：注册门控", () => {
     expect(typeof pane.onDestroy).toBe("function");
   });
 
-  it("translate.enabled=false → 不注册（不出现会首用即失败的面板）", () => {
+  it("translate.enabled=false → 不注册（不出现会首用即失败的面板）", async () => {
     z.prefs.load({ ...READY_PREFS, "translate.enabled": false }, PREFIX);
-    expect(registerTranslateUI()).toBe(false);
+    expect(await registerTranslateUI()).toBe(false);
     expect(z.registeredPanes).toHaveLength(0);
   });
 
-  it("引擎未就绪（custom 缺 apiUrl）→ 不注册", () => {
+  it("引擎未就绪（custom 缺 apiUrl）→ 不注册", async () => {
     z.prefs.load(
       {
         "translate.enabled": true,
@@ -61,28 +61,28 @@ describe("B16b registerTranslateUI：注册门控", () => {
       },
       PREFIX,
     );
-    expect(registerTranslateUI()).toBe(false);
+    expect(await registerTranslateUI()).toBe(false);
     expect(z.registeredPanes).toHaveLength(0);
   });
 
-  it("重复注册是幂等的（不双注册）", () => {
+  it("重复注册是幂等的（不双注册）", async () => {
     z.prefs.load(READY_PREFS, PREFIX);
-    expect(registerTranslateUI()).toBe(true);
-    expect(registerTranslateUI()).toBe(true);
+    expect(await registerTranslateUI()).toBe(true);
+    expect(await registerTranslateUI()).toBe(true);
     expect(z.registeredPanes).toHaveLength(1);
   });
 
-  it("反注册后可重新注册", () => {
+  it("反注册后可重新注册", async () => {
     z.prefs.load(READY_PREFS, PREFIX);
-    registerTranslateUI();
-    expect(unregisterTranslateUI()).toBe(true);
-    expect(registerTranslateUI()).toBe(true);
+    await registerTranslateUI();
+    expect(await unregisterTranslateUI()).toBe(true);
+    expect(await registerTranslateUI()).toBe(true);
     expect(z.registeredPanes).toHaveLength(2);
   });
 
-  it("onItemChange 仅在 reader 标签启用面板", () => {
+  it("onItemChange 仅在 reader 标签启用面板", async () => {
     z.prefs.load(READY_PREFS, PREFIX);
-    registerTranslateUI();
+    await registerTranslateUI();
     const { onItemChange } = z.registeredPanes[0];
 
     let enabled: boolean | undefined;
@@ -93,10 +93,10 @@ describe("B16b registerTranslateUI：注册门控", () => {
     expect(enabled).toBe(false);
   });
 
-  it("宿主缺 ItemPaneManager → 不崩，返回 false", () => {
+  it("宿主缺 ItemPaneManager → 不崩，返回 false", async () => {
     z.prefs.load(READY_PREFS, PREFIX);
     // z.Zotero 是 getter（每次访问重建），不能整体替换——直接换 globalThis 上的引用。
     (globalThis as any).Zotero = { ...z.Zotero, ItemPaneManager: undefined };
-    expect(registerTranslateUI()).toBe(false);
+    expect(await registerTranslateUI()).toBe(false);
   });
 });

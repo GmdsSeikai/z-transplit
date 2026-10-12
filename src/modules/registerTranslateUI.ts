@@ -30,6 +30,9 @@ export const TRANSLATE_PANE_ID = "ztransplit-translate";
 /** Re-entrancy latch (same reason as src/hooks.ts#onStartup). */
 let registered = false;
 
+let toolbarRegistered = false;
+let toolbarModule: any = null;
+
 /**
  * This addon's ID (package.json config), with a runtime fallback to
  * `addon.data.config.addonID` — same resolution order as
@@ -56,7 +59,7 @@ const SIDENAV_L10N_ID = getLocaleID("pane-translate-sidenav");
  * skipped (pref off / engine not ready / host API missing) — the reason is
  * always logged so a missing pane is diagnosable rather than silent.
  */
-export function registerTranslateUI(): boolean {
+export async function registerTranslateUI(): Promise<boolean> {
   if (registered) {
     safeDebug("[Z-Transplit] registerTranslateUI: already registered, skipping");
     return true;
@@ -179,6 +182,15 @@ export function registerTranslateUI(): boolean {
 
     registered = true;
     safeDebug(`[Z-Transplit] registerTranslateUI: section "${paneID}" registered`);
+    if (!toolbarRegistered) {
+      try {
+        toolbarModule = await import("../ui/bilingualControl");
+        toolbarModule.registerBilingualReaderToolbar?.();
+        toolbarRegistered = true;
+      } catch (e) {
+        safeDebug("[Z-Transplit] bilingual toolbar register failed: " + e);
+      }
+    }
     return true;
   } catch (e) {
     safeDebug(`[Z-Transplit] registerTranslateUI: registration failed: ${e}`);
@@ -203,6 +215,15 @@ export function unregisterTranslateUI(): boolean {
     safeDebug(
       `[Z-Transplit] unregisterTranslateUI: section "${TRANSLATE_PANE_ID}" revoked (${ok})`,
     );
+    if (toolbarRegistered && toolbarModule) {
+      try {
+        toolbarModule.unregisterBilingualReaderToolbar?.();
+      } catch {
+        /* best-effort */
+      }
+      toolbarModule = null;
+      toolbarRegistered = false;
+    }
     return true;
   } catch (e) {
     safeDebug(`[Z-Transplit] unregisterTranslateUI: failed: ${e}`);
