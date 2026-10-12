@@ -3,6 +3,52 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.8.1] - 2026-10-12
+
+### Added
+
+- The bilingual progress line now surfaces engine failures instead of hiding
+  them: when paragraphs fail, it switches to "N/M paragraphs translated, K
+  failed: ⟨reason⟩ (click a failed paragraph to retry)", carrying the most
+  recent engine error (network unreachable, HTTP status, rate limit) captured
+  from the translation chain. Previously a dead engine left every block at
+  "Translating…" with only a bare count in the sidebar, and nothing explained
+  why.
+
+### Changed
+
+- Split-view page sync is snappier and stops echo-induced jumps: the mirror
+  guard that swallows the echo of our own scroll write widens from a
+  same-tick clear to 50 ms (pdf.js can re-anchor scrollTop a few ms after the
+  write), the post-zoom settle window shrinks from 350 ms to 200 ms, and the
+  resizer resume delay shrinks from 200 ms to 100 ms.
+- The bilingual control's buttons are visually unambiguous: the toggle wears
+  its red active state only while a session is live, and the mode buttons
+  (上下对照 / 仅译文) render dimmed with no highlight when no session runs —
+  exiting a session clears the mode highlight instead of resetting it to the
+  stored default, so the highlight only ever reflects the live presentation.
+- The translate pane gives its result more room and clearer contrast: the
+  source box grows from 11 em to 16 em and the translation box from 16 em to
+  24 em, and both gain a left accent border (gray for source, blue for the
+  translation) over a tinted background.
+- Scroll-trigger injection failures in the split view now log which pane
+  failed, so a side that silently fell back to the 400 ms backstop poll is
+  diagnosable from the debug output.
+
+### Fixed
+
+- Read-aloud control buttons (pause / previous / next / stop) were always
+  visible, even with playback stopped: the button class's
+  `display: inline-flex` overrode the user-agent rule behind the `hidden`
+  attribute. An explicit `[hidden] { display: none }` rule restores the
+  attribute's meaning (found in on-device testing).
+- Selection auto-refresh in the translate pane: clearing the selection now
+  drops the stale source text and translation instead of keeping them on
+  screen, and a 1-second polling backstop catches selection changes the
+  reader's popup event can miss (keyboard selection, certain builds). The
+  handler early-returns while the text is unchanged, so the poll idles in
+  practice.
+
 ## [1.8.0] - 2026-10-11
 
 ### Added
@@ -325,6 +371,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 1.2.0 predate this changelog and are not backfilled.
 
+[1.8.1]: https://github.com/Liozhang/z-transplit/compare/v1.8.0...v1.8.1
+[1.8.0]: https://github.com/Liozhang/z-transplit/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/Liozhang/z-transplit/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/Liozhang/z-transplit/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/Liozhang/z-transplit/compare/v1.6.0...v1.7.0
