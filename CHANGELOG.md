@@ -3,6 +3,31 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.9.0] - 2026-10-13
+
+### Changed
+
+- The bilingual control's semantics are unambiguous at the color level: red
+  (#b5343a) now means only "session active" on the toggle, while the current
+  presentation mode (上下对照 / 仅译文) is highlighted with a neutral pressed
+  style (fill + underline indicator) instead of the brand red.
+- The bilingual toggle's label is fixed ("双语阅读" / "Bilingual reading") and
+  the session state is expressed by a pressed state (`aria-pressed` attribute)
+  instead of swapping the label between "双语对照" and "退出双语"; the now
+  unused `bilingual-exit` Fluent key was removed from both locales.
+- The mode buttons no longer render dimmed when no session runs. They have
+  always been operable outside a session (click = start a session in that
+  mode), so the 50% opacity — visual language for "disabled" — contradicted
+  the behavior; the buttons now look the same in both states.
+
+### Fixed
+
+- The reader translate pane's source and result areas keep a minimum height
+  (`min-height: 4em`), and the result area renders a persistent placeholder
+  box ("翻译结果将显示在这里" / "Translation will appear here.") in the idle
+  state instead of disappearing entirely. The pane no longer collapses to a
+  sliver or jumps vertically as the selection and translation state change.
+
 ## [1.8.1] - 2026-10-12
 
 ### Added
@@ -371,6 +396,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Releases before 1.2.0 predate this changelog and are not backfilled.
 
+[1.9.0]: https://github.com/Liozhang/z-transplit/compare/v1.8.1...v1.9.0
 [1.8.1]: https://github.com/Liozhang/z-transplit/compare/v1.8.0...v1.8.1
 [1.8.0]: https://github.com/Liozhang/z-transplit/compare/v1.7.2...v1.8.0
 [1.7.2]: https://github.com/Liozhang/z-transplit/compare/v1.7.1...v1.7.2
