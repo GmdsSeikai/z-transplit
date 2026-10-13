@@ -160,6 +160,9 @@ const PANE_CSS = `
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 .${CLS}-source-text {
+  /* Stable floor: the empty state keeps a visible block (colored edge +
+     background) instead of collapsing to one placeholder line. */
+  min-height: 4em;
   max-height: 16em; overflow-y: auto;
   padding: 8px 10px;
   border-inline-start: 3px solid var(--material-border-quinary, rgba(127,127,127,0.35));
@@ -250,6 +253,9 @@ const PANE_CSS = `
 }
 .${CLS}-result-idle { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .${CLS}-result-text {
+  /* Same floor as the source block: idle placeholder and short translations
+     stay a recognizable, height-stable region. */
+  min-height: 4em;
   max-height: 24em; overflow-y: auto;
   padding: 8px 10px;
   border-inline-start: 3px solid var(--accent-blue, #4072e5);
@@ -890,23 +896,30 @@ export function mountTranslatePane(
       return;
     }
 
-    if (status === "idle" && sourceText) {
-      // Selection is ready but auto-translate is off → offer the action.
-      // Never re-show 「请选择文本」 here (leadero §9.4).
-      const box = el(doc, "div", `${CLS}-result-idle`);
-      const action = el(doc, "button", `${CLS}-btn ${CLS}-btn-primary`) as HTMLButtonElement;
-      action.type = "button";
-      action.textContent = getString(
-        wordMode ? "pane-translate-lookup-action" : "pane-translate-action",
-      );
-      action.addEventListener("click", () => {
-        if (wordMode) void runLookup(sourceText);
-        else void runTranslation(sourceText);
-      });
-      box.appendChild(action);
-      resultArea.appendChild(box);
+    if (status === "idle") {
+      // 空闲态也渲染译文占位框：译文区作为一个稳定区块存在（带 min-height
+      // 与左色条），不再随状态整体消失/出现。有选区且 auto 关闭时，动作按钮
+      // 保留在占位框下方；不复读「请选择文本」（leadero §9.4）。
+      const placeholderBox = el(doc, "div", `${CLS}-result-text`);
+      const placeholder = el(doc, "span", `${CLS}-placeholder`);
+      placeholder.textContent = getString("pane-translate-result-placeholder");
+      placeholderBox.appendChild(placeholder);
+      resultArea.appendChild(placeholderBox);
+      if (sourceText) {
+        const box = el(doc, "div", `${CLS}-result-idle`);
+        const action = el(doc, "button", `${CLS}-btn ${CLS}-btn-primary`) as HTMLButtonElement;
+        action.type = "button";
+        action.textContent = getString(
+          wordMode ? "pane-translate-lookup-action" : "pane-translate-action",
+        );
+        action.addEventListener("click", () => {
+          if (wordMode) void runLookup(sourceText);
+          else void runTranslation(sourceText);
+        });
+        box.appendChild(action);
+        resultArea.appendChild(box);
+      }
     }
-    // idle + no source text → nothing: the source block already explains why.
   }
 
   function renderAll(): void {

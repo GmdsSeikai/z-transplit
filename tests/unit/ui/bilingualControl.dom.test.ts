@@ -12,6 +12,8 @@
  *   - 一键直达：会话外点「仅译文」直接以该模式启动，选择被记住
  *   - 点击后立即出现准备反馈（reader 解析等待期间不再沉默）
  *   - 启动期间三个按钮禁用，结束后恢复可点（退出复位到存储的默认模式）
+ *   - 开关文案固定（bilingual-enable 键），会话状态由 aria-pressed 表达；
+ *     模式按钮无半透明态，当前模式用中性按压态高亮
  *
  * speechSynthesis 用Fake：cancel/finish 的 onend 一律落在后续宏任务（与真实
  * 平台一致），因此 stale-onend 竞态在本测试中真实复现。
@@ -132,6 +134,7 @@ interface Ctx {
   spoken(): string[];
   playingVisible(): boolean;
   toggleText(): string;
+  togglePressed(): string;
   statusText(): string;
   modeValue(): string;
   modeHighlighted(): number;
@@ -187,6 +190,12 @@ function setup(prefs: Record<string, unknown> = {}): Ctx {
     playingVisible: () => !button("readaloud-stop").hidden,
     toggleText: () =>
       String(doc.querySelector("button.ztransplit-bc-toggle")?.textContent ?? ""),
+    togglePressed: () =>
+      String(
+        doc
+          .querySelector("button.ztransplit-bc-toggle")
+          ?.getAttribute("aria-pressed") ?? "",
+      ),
     statusText: () =>
       String(doc.querySelector(".ztransplit-bc-status")?.textContent ?? ""),
   modeValue: () =>
@@ -350,13 +359,14 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(ctx.playingVisible()).toBe(true);
     expect(ctx.modeDisabled()).toBe(false);
 
-    ctx.click("bilingual-exit");
+    ctx.click("bilingual-enable"); // 开关文案固定，退出也是点同一个按钮
     await flush();
     expect(ctx.playingVisible()).toBe(false);
     expect(ctx.spoken()).toEqual(["T1"]); // 无新增语音
     expect(ctx.toggleText()).toContain("bilingual-enable");
-    // 无会话时不再回写默认模式高亮：无高亮 = 「模式跟随下次启动的选择」，
-    // 模式按钮保持半透明可点（点击 = 以该模式直启）。
+    expect(ctx.togglePressed()).toBe("false");
+    // 无会话时不回写默认模式高亮：无高亮 = 「模式跟随下次启动的选择」，
+    // 模式按钮保持可点（点击 = 以该模式直启），不再用半透明暗示禁用。
     expect(ctx.modeHighlighted()).toBe(0);
     expect(ctx.modeValue()).toBe("");
     // 模式按钮始终可点（会话外点击 = 以该模式启动），只有启动进行中禁用。
@@ -400,7 +410,7 @@ describe("双语控制条：会话与面板生命周期", () => {
     h.handle = makeHandle();
     ctx.click("bilingual-enable");
     await flush();
-    expect(ctx.toggleText()).toContain("bilingual-exit");
+    expect(ctx.togglePressed()).toBe("true");
     expect(vi.mocked(exitBilingualSession)).toHaveBeenCalledTimes(1);
   });
 
@@ -416,7 +426,7 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(h.handle.setMode).toHaveBeenCalledWith("interleave");
     expect(ctx.storedMode()).toBe("interleave");
 
-    ctx.click("bilingual-exit");
+    ctx.click("bilingual-enable"); // 退出点同一个开关
     await flush();
     // 退出清除模式高亮（无会话 = 无高亮）；存储的默认模式保持 interleave 不变
     expect(ctx.modeHighlighted()).toBe(0);
@@ -432,7 +442,7 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(ctx.modeDisabled()).toBe(false);
     ctx.click("bilingual-mode-trans-only");
     await flush();
-    expect(ctx.toggleText()).toContain("bilingual-exit");
+    expect(ctx.togglePressed()).toBe("true");
     expect(ctx.modeValue()).toBe("transOnly");
     expect(h.handle.setMode).toHaveBeenCalledWith("transOnly");
     expect(ctx.storedMode()).toBe("transOnly");
@@ -457,6 +467,20 @@ describe("双语控制条：会话与面板生命周期", () => {
     expect(ctx.button("bilingual-enable").disabled).toBe(true);
     await flush();
     expect(ctx.modeDisabled()).toBe(false);
-    expect(ctx.button("bilingual-exit").disabled).toBe(false);
+    expect(ctx.button("bilingual-enable").disabled).toBe(false);
+  });
+
+  it("开关文案固定，会话状态由按压态（aria-pressed）表达", async () => {
+    ctx = setup();
+    h.handle = makeHandle();
+    expect(ctx.toggleText()).toContain("bilingual-enable");
+    expect(ctx.togglePressed()).toBe("false");
+    await toggleOn(ctx);
+    // 文案不变，状态切换交给 aria-pressed / data-active（红色按压态）
+    expect(ctx.toggleText()).toContain("bilingual-enable");
+    expect(ctx.togglePressed()).toBe("true");
+    ctx.click("bilingual-enable"); // 再点 = 退出
+    await flush();
+    expect(ctx.togglePressed()).toBe("false");
   });
 });

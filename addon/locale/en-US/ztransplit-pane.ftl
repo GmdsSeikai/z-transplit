@@ -38,6 +38,7 @@ pane-translate-target-placeholder =
 
 ## Block 3 — result area (four states: loading / error / success / idle)
 pane-translate-action = Translate
+pane-translate-result-placeholder = Translation will appear here.
 pane-translate-translating = Translating…
 pane-translate-copy = Copy
 pane-translate-copied = Copied
@@ -84,8 +85,7 @@ itemtree-translate-attachment = Translate full text (save as attachment)
 itemtree-translate-split = Translate and compare side by side
 
 ## ─── Bilingual reading (src/ui/bilingualControl.ts + src/core/pdf/sdt/) ───
-bilingual-enable = Bilingual
-bilingual-exit = Exit bilingual
+bilingual-enable = Bilingual reading
 bilingual-mode-interleave = Interleaved (original + translation)
 bilingual-mode-trans-only = Translation only
 bilingual-peek-hint = Click to show the original text of this paragraph

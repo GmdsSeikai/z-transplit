@@ -162,7 +162,8 @@ z-transplit/
 
 - 挂载即读当前阅读器选区：`reader._internalReader._primaryView._selectionRanges`（:305-321，多段以空行拼接；`_primaryView` 缺失时退回 `_secondaryView`）。
 - 三段式：源文本区（含「刷新选区」）→ 语言栏（源=自动检测 → 目标语言输入框，默认 `Zotero.locale`，Enter 触发、IME 合成期不触发）→ 结果区。
-- 结果区四态：`loading`（CSS 骨架呼吸线）、`error`（消息 + 重试）、`success`（译文 + 复制）、`idle`（选区就绪但 auto 关 → 给「翻译」按钮，**不**复读「请选择文本」）。
+- 源文本区与结果区均有 `min-height: 4em` 的稳定占位（2026-10-13 起）：空状态保持可辨识的区块，面板高度不随选区/翻译状态塌陷跳动。
+- 结果区四态：`loading`（CSS 骨架呼吸线）、`error`（消息 + 重试）、`success`（译文 + 复制）、`idle`（渲染译文占位框「翻译结果将显示在这里」，选区就绪且 auto 关时在占位框下追加「翻译」按钮，**不**复读「请选择文本」）。
 - `translate.auto` **实时读**（每次 refresh 时读 pref），不缓存。
 - 翻译在 chrome realm 直接动态 import 引擎模块，不走任何桥。
 - **失败 ≠ 空态**：引擎模块加载失败、译文为空、引擎未就绪、超出 `translate.maxChars`（:689-703，显式拒绝并报字数）都给出明确错误。

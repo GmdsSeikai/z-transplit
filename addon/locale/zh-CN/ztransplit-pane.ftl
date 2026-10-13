@@ -37,6 +37,7 @@ pane-translate-target-placeholder =
 
 ## 第 3 段 — 结果区（四态：loading / error / success / idle）
 pane-translate-action = 翻译
+pane-translate-result-placeholder = 翻译结果将显示在这里。
 pane-translate-translating = 正在翻译…
 pane-translate-copy = 复制
 pane-translate-copied = 已复制
@@ -83,8 +84,7 @@ itemtree-translate-attachment = 翻译全文（生成译文附件）
 itemtree-translate-split = 翻译并分屏对照
 
 ## ─── 双语对照阅读（src/ui/bilingualControl.ts + src/core/pdf/sdt/）────────
-bilingual-enable = 双语对照
-bilingual-exit = 退出双语
+bilingual-enable = 双语阅读
 bilingual-mode-interleave = 上下对照
 bilingual-mode-trans-only = 仅译文
 bilingual-peek-hint = 点击查看本段原文

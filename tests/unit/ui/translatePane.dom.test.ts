@@ -48,6 +48,7 @@ const K = {
   refresh: "ztransplit-pane-translate-refresh",
   translating: "ztransplit-pane-translate-translating",
   placeholder: "ztransplit-pane-translate-placeholder",
+  resultPlaceholder: "ztransplit-pane-translate-result-placeholder",
   emptySelection: "ztransplit-pane-translate-empty-selection",
   tooLong: "ztransplit-pane-translate-error-too-long",
   notReady: "ztransplit-pane-translate-error-not-ready",
@@ -157,11 +158,14 @@ describe("B16 阅读器翻译面板：选区与自动翻译", () => {
     expect(ctx.text(ctx.body)).toContain("第二段");
   });
 
-  it("auto=false：idle 给「翻译」按钮，不復读「请选择文本」占位", () => {
+  it("auto=false：idle 给「翻译」按钮与译文占位框，不复读「请选择文本」占位", () => {
     ctx = setup(ENGINE_PREFS, ["hello"]);
     mountTranslatePane({ doc: ctx.doc, body: ctx.body });
     expect(ctx.buttons(K.action).length).toBe(1);
     expect(ctx.text(ctx.body)).not.toContain(K.placeholder);
+    // 译文区作为稳定区块存在：空闲时渲染占位框，而不是等翻译成功才出现
+    expect(ctx.text(ctx.body)).toContain(K.resultPlaceholder);
+    expect(ctx.doc.querySelectorAll(".ztransplit-tp-result-text").length).toBe(1);
   });
 
   it("真机回归：reader 为附件 itemID、section 传入父条目 id 时仍能读到选区", () => {
@@ -175,10 +179,13 @@ describe("B16 阅读器翻译面板：选区与自动翻译", () => {
     expect(ctx.text(ctx.body)).not.toContain(K.noReader);
   });
 
-  it("无选区时显示占位文案而不是假的空态", () => {
+  it("无选区时显示占位文案而不是假的空态，译文区不再整体消失", () => {
     ctx = setup(ENGINE_PREFS, []);
     mountTranslatePane({ doc: ctx.doc, body: ctx.body });
     expect(ctx.text(ctx.body)).toContain(K.emptySelection);
+    expect(ctx.text(ctx.body)).toContain(K.resultPlaceholder);
+    expect(ctx.doc.querySelectorAll(".ztransplit-tp-result-text").length).toBe(1);
+    expect(ctx.buttons(K.action).length).toBe(0);
   });
 
   it("auto=true：挂载即自动翻译（fetch 打到 custom 端点）", async () => {

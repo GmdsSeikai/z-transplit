@@ -126,6 +126,13 @@ function svg(doc: Document, markup: string): SVGElement {
   return el as unknown as SVGElement;
 }
 
+// 样式约定：模板串内（CSS 文本）只用英文注释——no-hardcoded-cjk 门禁会扫
+// 描字符串字面量，中文说明写在模板外。
+// 颜色语义：品牌红 #b5343a 只用于开关的「会话激活」按压态；当前模式的
+// 高亮用中性填充加底部指示条（inset 阴影），不与开关争用同一颜色。
+// hidden 规则：.ra-btn 等的 display:inline-flex 来源优先级高于 UA 样式表对
+// [hidden] 的 display:none，实测（2026-10-12 实机）未播放时暂停/上一句/
+// 下一句/停止会全部常显，末尾的 [hidden] 规则恢复该属性语义。
 function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
   const style = el(doc, "style");
   style.className = `${CLS}-style`;
@@ -151,11 +158,6 @@ function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
   border-radius: 5px;
   background: var(--material-background, transparent);
 }
-/* When no bilingual session is active, mode buttons are dimmed to signal they
-   are not independently operable — they only take effect once the toggle is on. */
-.${CLS}-bar[data-session="false"] .${CLS}-mode-btn {
-  opacity: 0.5;
-}
 .${CLS}-toggle, .${CLS}-mode-btn, .${CLS}-ra-btn {
   font: inherit; cursor: pointer; padding: 2px 10px;
   border: 1px solid var(--material-border-quinary, rgba(127,127,127,0.35));
@@ -175,7 +177,10 @@ function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
   background: #b5343a; color: #ffffff; border-color: #b5343a;
 }
 .${CLS}-mode-btn[data-active="true"] {
-  background: #b5343a; color: #ffffff; border-color: #b5343a;
+  background: var(--fill-quarternary, rgba(127,127,127,0.28));
+  color: var(--zotero-text-color, inherit);
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 currentColor;
 }
 .${CLS}-segmented {
   display: inline-flex;
@@ -197,9 +202,7 @@ function ensureStyle(doc: Document, body: HTMLElement): HTMLStyleElement {
 .${CLS}-ra-btn:disabled, .${CLS}-toggle:disabled, .${CLS}-mode-btn:disabled {
   opacity: 0.55; cursor: default;
 }
-/* hidden 属性依赖 UA 样式表的 display:none，但上面 .ra-btn 的
-   display:inline-flex 以更高的来源优先级覆盖了它——实测（2026-10-12 实机）
-   暂停/上一句/下一句/停止在未播放时全部可见。这条规则恢复 hidden 的语义。 */
+/* display:inline-flex above outranks the UA [hidden] rule — restore it. */
 .${CLS}-ra-btn[hidden], .${CLS}-toggle[hidden], .${CLS}-mode-btn[hidden] {
   display: none;
 }
@@ -570,11 +573,14 @@ export function mountBilingualControl(options: {
   root.appendChild(title);
 
   const controlsBox = el(doc, "div", `${CLS}-bar`);
-  controlsBox.dataset.session = "false";
   const toggle = el(doc, "button", `${CLS}-toggle`) as HTMLButtonElement;
   toggle.type = "button";
+  // 文案固定（不随会话状态切换），开启与否由 aria-pressed + data-active 表达；
+  // 品牌红仅用于按压（会话激活）态。
   toggle.textContent = getString("bilingual-enable");
   toggle.dataset.active = "false";
+  toggle.setAttribute("aria-pressed", "false");
+  toggle.title = getString("bilingual-toolbar-tooltip");
 
   let modeButtons: ControlState["modeButtons"] = null;
   const progressLabel = el(doc, "span", `${CLS}-progress`);
@@ -597,10 +603,7 @@ export function mountBilingualControl(options: {
     },
     setActive(activeNow) {
       toggle.dataset.active = String(activeNow);
-      controlsBox.dataset.session = String(activeNow);
-      toggle.textContent = getString(
-        activeNow ? "bilingual-exit" : "bilingual-enable",
-      );
+      toggle.setAttribute("aria-pressed", String(activeNow));
       // When no session is active, clear the mode highlight so the bar does not
       // imply a mode is selected; the buttons remain clickable and each click
       // starts a session directly in that mode.

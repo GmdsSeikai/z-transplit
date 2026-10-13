@@ -90,7 +90,7 @@ and bidirectional scroll, page and zoom sync — for close paragraph-by-paragrap
 
 ### 4. Interleaved Bilingual Reading (Zotero 10)
 
-Turn on "Bilingual" in the reader's Translate section: Zotero 10's SDT reading mode
+Turn on "Bilingual reading" in the reader's Translate section: Zotero 10's SDT reading mode
 reflows the PDF into structured text and injects a translation block under every
 paragraph, translated lazily as you scroll, with live `3/12 paragraphs translated`
 progress. The "Interleaved" and "Translation only" buttons also work before a
