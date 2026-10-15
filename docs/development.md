@@ -119,7 +119,8 @@ node scripts/qa/real-machine.mjs shoot                   # 结束
 ```
 
 可用 action：`ping`、`snapshot`、`introspect`、`reader`、`selectText`、`paneFlow`、
-`bilingual`、`readAloud`、`menus`、`itemtree`、`prefs`、`pipelineViaMenu`、`splitPanes`、
+`bilingual`、`readAloud`、`menus`、`itemtree`、`tools`（工具菜单「生词本」入口检查）、
+`prefs`、`pipelineViaMenu`、`splitPanes`、
 `attachments`、`verifyPdf`、`installPdf`、`setPref`、`capabilities`、`locales`、
 `allPanes`、`sectionState`、`listCommands`、`odlStatus`（解析组件状态检查，直调
 `Zotero.ZTransplit.odlJar.getStatus`）、`odlInstall`（解析组件下载/修复入口）、

@@ -202,6 +202,27 @@ export function isSplitViewTab(tabID: string): boolean {
 }
 
 /**
+ * The open split tab whose left OR right pane shows this item, else undefined.
+ * Menu code reads it at build time to checkmark the split entries. Adapters
+ * own the pane's item (ReaderPane.item), so match on item.id defensively —
+ * a pane mid-attach (adapter present, item unresolved) simply doesn't match.
+ */
+export function findSplitTabForItem(
+  itemID: number | undefined | null,
+): SplitTabState | undefined {
+  if (itemID === undefined || itemID === null) return undefined;
+  for (const state of stateMap.values()) {
+    const leftID: number | undefined = state.leftAdapter?.item?.id;
+    const rightID: number | undefined = state.rightAdapter?.item?.id;
+    if (leftID === itemID || rightID === itemID) return state;
+  }
+  safeDebug(
+    `[Z-Transplit] findSplitTabForItem: miss for ${itemID} (open split tabs: ${stateMap.size})`,
+  );
+  return undefined;
+}
+
+/**
  * Stop every sync poller without tearing down the tabs themselves. Plugin
  * shutdown previously had no split-view cleanup — the 400ms sync interval
  * survived disable/reload as long as the user kept the tab open. Deliberately

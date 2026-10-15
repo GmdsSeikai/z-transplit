@@ -59,6 +59,7 @@ pane-translate-card-source-model = Source: model engine
 pane-translate-card-source-mt = Source: translation engine
 
 ## ─── Word-cards tab (src/ui/wordCardsTab.ts + src/modules/registerWordCardsUI.ts)
+tools-wordcards = Word Cards
 wordcards-tab-title = Word Cards
 wordcards-toolbar-tooltip = Word cards (words you looked up)
 wordcards-search-placeholder =
@@ -82,7 +83,7 @@ wordcards-no-match = No matching cards.
 ## ─── Library item context menu (src/modules/registerItemTreeMenu.ts) ──────
 itemtree-menu = Z-Transplit
 itemtree-translate-attachment = Translate full text (save as attachment)
-itemtree-translate-split = Translate and compare side by side
+itemtree-translate-split = Split-screen translation
 
 ## ─── Bilingual reading (src/ui/bilingualControl.ts + src/core/pdf/sdt/) ───
 bilingual-enable = Bilingual reading

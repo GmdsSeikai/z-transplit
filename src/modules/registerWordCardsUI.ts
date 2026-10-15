@@ -1,22 +1,24 @@
 /**
- * registerWordCardsUI — entry buttons for the Word Cards tab.
+ * registerWordCardsUI — entries for the Word Cards tab.
  *
- * Two buttons, one destination (wordCardsTab#openWordCardsTab):
+ * Three entries, one destination (wordCardsTab#openWordCardsTab):
  *
  *   - A library toolbar button (XUL toolbarbutton) injected into the main
  *     window per window, following registerItemTreeMenu's tracked-window
  *     pattern: idempotent by element id, tracked in a module array, revoked
  *     per window on window unload and wholly on plugin shutdown.
+ *   - A「工具 → 生词本」menu item injected into the main window's menubar
+ *     Tools popup, same tracked-window pattern (the anchor id is Zotero-
+ *     internal; a miss degrades to a debug log).
  *   - A reader toolbar button via Zotero.Reader#registerEventListener
  *     ("renderToolbar"), following splitViewFactory's module-scope handler
  *     pattern (unregister needs the same function reference).
  *
- * The library toolbar's anchor id is not part of any public Zotero API, so
- * the anchor is resolved through a candidate chain and a miss degrades to a
- * debug log — the reader button still reaches the tab, and nothing else in
- * the addon depends on the library button.
+ * None of the anchors are part of a public Zotero API, so each is resolved
+ * defensively and a miss degrades to a debug log — the remaining entries still
+ * reach the tab, and nothing else in the addon depends on any single one.
  *
- * Both buttons lazy-import the tab module on first click, keeping the tab
+ * All entries lazy-import the tab module on first activation, keeping the tab
  * UI (and its stylesheet string) off the startup path.
  */
 
@@ -26,6 +28,17 @@ import { safeDebug } from "../utils/logger";
 
 /** Element id of the injected library toolbar button (idempotency key). */
 const BUTTON_ID = "ztransplit-wordcards-button";
+
+/** Element id of the injected Tools-menu item (idempotency key). */
+const TOOLS_MENUITEM_ID = "ztransplit-tools-wordcards";
+
+/**
+ * Tools-menu anchors, by menupopup id then menu id. Both Zotero 7.0.15 and 10
+ * use `toolsMenu` + `menu_ToolsPopup` (verified against both hosts' sources);
+ * the older-style ids stay in the chain as a defensive fallback.
+ */
+const TOOLS_POPUP_IDS = ["menu_ToolsPopup", "menu-tools-popup"];
+const TOOLS_MENU_IDS = ["toolsMenu", "menu-tools"];
 
 /**
  * Library toolbar anchor candidates, in order of preference. None of these
@@ -40,7 +53,8 @@ const TOOLBAR_ANCHOR_IDS = [
 
 interface TrackedWindow {
   win: any;
-  button: any;
+  button: any | null;
+  toolsItem: any | null;
 }
 
 const tracked: TrackedWindow[] = [];
@@ -72,22 +86,45 @@ export function registerWordCardsUI(): void {
 }
 
 /**
- * Inject the library toolbar button into one main window. Idempotent per
- * window (and safe when no toolbar anchor exists — the button is skipped
- * with a log rather than breaking startup).
+ * Inject the library toolbar button and the Tools-menu item into one main
+ * window. Each injection is idempotent by its own element id, and a missing
+ * anchor skips that one entry with a log rather than breaking the others
+ * (or startup).
  */
 export function registerWordCardsUIForWindow(win: any): void {
   try {
     const doc: Document | undefined = win?.document;
     if (!doc) return;
-    if (doc.getElementById(BUTTON_ID)) return;
+    const existing = tracked.find((t) => t.win === win);
+    const entry: TrackedWindow = existing ?? { win, button: null, toolsItem: null };
 
+    if (!doc.getElementById(BUTTON_ID)) {
+      entry.button = injectLibraryToolbarButton(win, doc) ?? entry.button;
+    }
+    if (!doc.getElementById(TOOLS_MENUITEM_ID)) {
+      entry.toolsItem = injectToolsMenuItem(win, doc) ?? entry.toolsItem;
+    }
+    if ((entry.button || entry.toolsItem) && !existing) tracked.push(entry);
+  } catch (e) {
+    safeDebug("[Z-Transplit] wordCards: window injection failed: " + e);
+  }
+}
+
+/**
+ * Build and append the library toolbar button. Returns the element, or null
+ * when no toolbar anchor exists (logged, non-fatal).
+ */
+function injectLibraryToolbarButton(
+  win: any,
+  doc: Document,
+): any | null {
+  try {
     const toolbar = resolveToolbar(doc);
     if (!toolbar) {
       safeDebug(
         "[Z-Transplit] wordCards: no library toolbar anchor found — library button skipped",
       );
-      return;
+      return null;
     }
 
     const button = doc.createXULElement("toolbarbutton");
@@ -107,27 +144,73 @@ export function registerWordCardsUIForWindow(win: any): void {
       );
     });
     toolbar.appendChild(button);
-    tracked.push({ win, button });
     safeDebug("[Z-Transplit] wordCards: library toolbar button injected");
+    return button;
   } catch (e) {
     safeDebug("[Z-Transplit] wordCards: library button injection failed: " + e);
+    return null;
   }
 }
 
-/** Revoke one window's button (window unload). */
+/**
+ * Build and append the「工具 → 生词本」item. Returns the element, or null when
+ * the Tools menu cannot be found (logged, non-fatal). See TOOLS_POPUP_IDS for
+ * the anchor-resolution order.
+ */
+function injectToolsMenuItem(win: any, doc: Document): any | null {
+  try {
+    let popup: Element | null = null;
+    for (const id of TOOLS_POPUP_IDS) {
+      popup = doc.getElementById(id);
+      if (popup) break;
+    }
+    if (!popup) {
+      for (const id of TOOLS_MENU_IDS) {
+        const menu = doc.getElementById(id);
+        popup = menu?.querySelector("menupopup") ?? null;
+        if (popup) break;
+      }
+    }
+    if (!popup) {
+      safeDebug(
+        "[Z-Transplit] wordCards: no Tools menu found — tools entry skipped",
+      );
+      return null;
+    }
+
+    const menuitem = doc.createXULElement("menuitem");
+    menuitem.id = TOOLS_MENUITEM_ID;
+    menuitem.setAttribute("label", getString("tools-wordcards"));
+    menuitem.addEventListener("command", () => {
+      void import("../ui/wordCardsTab").then((mod) =>
+        mod.openWordCardsTab(win),
+      );
+    });
+    popup.appendChild(menuitem);
+    safeDebug("[Z-Transplit] wordCards: Tools menu item injected");
+    return menuitem;
+  } catch (e) {
+    safeDebug("[Z-Transplit] wordCards: tools item injection failed: " + e);
+    return null;
+  }
+}
+
+/** Revoke one window's entries (window unload). */
 export function unregisterWordCardsUIForWindow(win: any): void {
   for (let i = tracked.length - 1; i >= 0; i--) {
     if (tracked[i].win !== win) continue;
-    try {
-      tracked[i].button.remove();
-    } catch {
-      /* best-effort */
+    for (const node of [tracked[i].button, tracked[i].toolsItem]) {
+      try {
+        node?.remove();
+      } catch {
+        /* best-effort */
+      }
     }
     tracked.splice(i, 1);
   }
 }
 
-/** Revoke everything: reader listener, all buttons, and an open tab. */
+/** Revoke everything: reader listener, all injected entries, and an open tab. */
 export function unregisterWordCardsUI(): void {
   const Reader = (globalThis as any)?.Zotero?.Reader;
   if (readerToolbarHandler && typeof Reader?.unregisterEventListener === "function") {
@@ -138,11 +221,13 @@ export function unregisterWordCardsUI(): void {
     }
   }
   readerToolbarHandler = null;
-  for (const { button } of tracked.splice(0)) {
-    try {
-      button.remove();
-    } catch {
-      /* best-effort */
+  for (const entry of tracked.splice(0)) {
+    for (const node of [entry.button, entry.toolsItem]) {
+      try {
+        node?.remove();
+      } catch {
+        /* best-effort */
+      }
     }
   }
   // Closing the tab fires its onClose, which tears the DOM down.

@@ -10,9 +10,12 @@
  *   3. Two createReaderBrowser() + a 5px resizer <box> into an <hbox>.
  *   4. Each browser loads reader.html; we call its createReader() global with a
  *      cloneInto'd config to start a reader instance per pane.
- *   5. Menu registration: 「翻译并分屏」(OpenDataLoader pipeline, with
- *      re-entrancy guard + cancel item) and 「对比分屏」(manual split), plus the
- *      full translate → import → open flow.
+ *   5. Menu registration: ONE「Z-Transplit」submenu in the reader context
+ *      menu (registerReaderContextMenu) — translate+split via the OpenDataLoader
+ *      pipeline (with re-entrancy guard + conditional cancel entry), manual
+ *      split, and the two bilingual entries; each entry carries a Zotero
+ *      checkbox checkmark while its state is live. Plus the full
+ *      translate → import → open flow.
  *
  * Ported from leadero's src/core/pdf/splitview/splitViewFactory.ts. Changes:
  *   - the addonID comes from this repo's package.json config (with a runtime
@@ -38,6 +41,7 @@ import { toErrorMessage } from "../../../utils/error";
 import { alertDialog } from "../../../utils/dialog";
 import { createAbortController } from "../../../utils/abort";
 import {
+  getActiveBilingualModeForItem,
   startBilingualSession,
   stopBilingualSession,
 } from "../sdt/bilingualLauncher";
@@ -57,7 +61,12 @@ import {
   stateMap,
   trackTimeout,
 } from "./splitViewSync";
-import { cleanupTabResources, findExistingTranslation, findLatestTranslation } from "./splitViewCleanup";
+import {
+  cleanupTabResources,
+  findExistingTranslation,
+  findLatestTranslation,
+  isSplitViewTab,
+} from "./splitViewCleanup";
 // 对外契约不变（消费者：addon.ts 的 typeof import / tests/node/split-sync.spec.ts）
 export {
   viewStateToInternal,
@@ -67,6 +76,7 @@ export {
 // 对外契约不变（消费者：addon.ts 的 typeof import / tests/node/split-sync.spec.ts）
 export {
   cleanupTabResources,
+  findSplitTabForItem,
   getSplitTabState,
   isSplitViewTab,
 } from "./splitViewCleanup";
@@ -395,62 +405,160 @@ function installResizer(state: SplitTabState): void {
 }
 
 /**
- * Register a "对比分屏" (Split View) item in the reader's blank-area context
- * menu.
+ * Handler kept at module scope so unregisterReaderContextMenu() can revoke it
+ * by reference via Reader.unregisterEventListener.
+ */
+let _readerContextMenuHandler: ((event: any) => void) | null = null;
+
+/**
+ * Register ONE「Z-Transplit」submenu in the reader's blank-area context menu,
+ * holding every reader-level entry so they cannot get mixed up with other
+ * plugins' flat items:
+ *   - 取消进行中的翻译 (only while a translation is in flight);
+ *   - 翻译并分屏打开 / 分屏对照（不翻译） — the split-view flows;
+ *   - 上下对照双语阅读 / 仅译文双语阅读 — the bilingual overlay flows.
  *
- * On click: takes the current reader's PDF as the LEFT pane, then looks for
- * another PDF attachment under the same parent item to use as the RIGHT pane
- * (prefers previous translations, then newest by dateAdded). If none found,
- * falls back to the same PDF on both sides.
+ * The submenu is a single appended item carrying a `groups` array: the host
+ * renderer (chrome reader.js _openContextMenu, verified identical on Zotero
+ * 7.0.15 and 10) turns `groups` into a nested menu with a menuseparator
+ * between groups. Every entry carries `checked`, which the host renders as a
+ * native checkbox checkmark; the menu is rebuilt on EVERY right-click, so
+ * state read at build time is always fresh (the conditional cancel entry has
+ * relied on this all along).
+ *
+ * Field restrictions, verified against Zotero 10.0.6's installed omni.ja
+ * (resource/reader/reader.js ← upstream src/index.zotero.js): the createReader
+ * wrapper hard-rejects TOP-LEVEL `icon`/`slider` only — "Icons and sliders are
+ * unsupported in native context menus", and the throw kills the whole popup —
+ * the check is not recursive into `groups`, and `checked`/`groups` are both
+ * consumed by the host renderer. So: no icon/slider anywhere, checkmarks and
+ * the submenu itself are safe on both host versions.
  *
  * Must be called once per plugin lifecycle (registerEventListener is global).
  */
-/**
- * Handler kept at module scope so unregisterSplitViewMenu() can revoke it by
- * reference via Reader.unregisterEventListener.
- */
-let _splitViewMenuHandler: ((event: any) => void) | null = null;
-
-export function registerSplitViewMenu(): void {
+export function registerReaderContextMenu(): void {
   const Reader = (Zotero as any).Reader;
   if (!Reader || typeof Reader.registerEventListener !== "function") return;
   const pluginID = addonID();
 
   try {
-    _splitViewMenuHandler = (event: any) => {
+    _readerContextMenuHandler = (event: any) => {
       const { reader, append } = event;
-      if (!append) return;
+      if (!append || !reader) return;
 
-      append({
-        label: getString("splitview-menu-compare"),
-        // 禁止加 icon/slider：Zotero 10 的 createReader 包装器对非 internal 菜单
-        // 硬校验（命中即抛 "Icons and sliders are unsupported in native context
-        // menus"），会让整个 view 右键菜单不渲染。宿主弹层也只消费
-        // label/disabled/checked/onCommand，icon 本来就被忽略。
-        onCommand: async () => {
-          try {
-            const currentItemID = getCurrentReaderItemID(reader);
-            if (!currentItemID) {
-              throw new Error("reader has no itemID");
-            }
-            await handleSplitFromReader({ itemID: currentItemID });
-          } catch (e) {
-            safeDebug("[Z-Transplit splitView] open failed: " + e);
-            alertDialog(
-              getString("splitview-error-dialog-title"),
-              getString("splitview-error-open", { detail: String(e) }),
-            );
-          }
+      // Group 1: conditional cancel — only shown while a translation is in
+      // progress (empty groups are filtered out below; a rendered empty group
+      // would leave a stray leading separator).
+      const cancelGroup: any[] = [];
+      if (activeTranslationController) {
+        cancelGroup.push({
+          label: getString("splitview-menu-cancel"),
+          onCommand: () => {
+            activeTranslationController?.abort();
+          },
+        });
+      }
+
+      // Group 2: split entries. Checkmark source is the tab the user
+      // right-clicked in (`reader.tabID`; undefined for reader windows, where
+      // no checkmark is correct — split views only ever open as tabs). Both
+      // entries checkmark together: 「分屏对照（不翻译）」 also lands the latest
+      // translation on the right pane when one exists (handleSplitFromReader),
+      // so the two flows can produce the same view and cannot be told apart —
+      // the checkmark means "this tab IS a split comparison", not which entry
+      // produced it.
+      const inSplitTab = isSplitViewTab(reader?.tabID);
+      const splitGroup = [
+        {
+          label: getString("splitview-menu-translate"),
+          checked: inSplitTab,
+          onCommand: () => runTranslateAndSplitFromReader(reader),
         },
+        {
+          label: getString("splitview-menu-compare"),
+          checked: inSplitTab,
+          onCommand: () => runCompareSplitFromReader(reader),
+        },
+      ];
+
+      // Group 3: bilingual entries — exactly one checkmarks while the single
+      // live session runs on THIS reader's item (getActiveBilingualModeForItem
+      // returns null for unknown-item sessions and for sessions on other
+      // items, so neither entry checkmarks then).
+      const liveMode = getActiveBilingualModeForItem(
+        getCurrentReaderItemID(reader),
+      );
+      const bilingualGroup = [
+        {
+          label: getString("splitview-menu-interleave"),
+          checked: liveMode === "interleave",
+          onCommand: async () => {
+            await launchBilingualFromReader(reader, "interleave");
+          },
+        },
+        {
+          label: getString("splitview-menu-trans-only"),
+          checked: liveMode === "transOnly",
+          onCommand: async () => {
+            await launchBilingualFromReader(reader, "transOnly");
+          },
+        },
+      ];
+
+      const groups = [cancelGroup, splitGroup, bilingualGroup].filter(
+        (group) => group.length > 0,
+      );
+      append({
+        label: getString("splitview-menu-root"),
+        groups,
       });
     };
     Reader.registerEventListener(
       "createViewContextMenu",
-      _splitViewMenuHandler,
+      _readerContextMenuHandler,
       pluginID,
     );
   } catch (e) {
     safeDebug("[Z-Transplit splitView] menu registration error: " + e);
+  }
+}
+
+/** Revoke the reader context-menu submenu (plugin shutdown / disable). Best-effort. */
+export function unregisterReaderContextMenu(): void {
+  const Reader = (Zotero as any).Reader;
+  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
+  if (_readerContextMenuHandler) {
+    try {
+      Reader.unregisterEventListener(
+        "createViewContextMenu",
+        _readerContextMenuHandler,
+      );
+    } catch (e) {
+      safeDebug("[Z-Transplit splitView] menu unregister error: " + e);
+    }
+    _readerContextMenuHandler = null;
+  }
+}
+
+/**
+ * 「分屏对照（不翻译）」 flow: takes the current reader's PDF as the LEFT pane,
+ * then looks for another PDF attachment under the same parent item to use as
+ * the RIGHT pane (prefers previous translations, then newest by dateAdded).
+ * Falls back to the same PDF on both sides when no sibling exists.
+ */
+async function runCompareSplitFromReader(reader: any): Promise<void> {
+  try {
+    const currentItemID = getCurrentReaderItemID(reader);
+    if (!currentItemID) {
+      throw new Error("reader has no itemID");
+    }
+    await handleSplitFromReader({ itemID: currentItemID });
+  } catch (e) {
+    safeDebug("[Z-Transplit splitView] open failed: " + e);
+    alertDialog(
+      getString("splitview-error-dialog-title"),
+      getString("splitview-error-open", { detail: String(e) }),
+    );
   }
 }
 
@@ -522,23 +630,6 @@ function getCurrentReaderItemID(reader: any): number | undefined {
     );
   }
   return reader?.itemID;
-}
-
-/** Revoke the split-view reader context-menu listener (plugin shutdown / disable). Best-effort. */
-export function unregisterSplitViewMenu(): void {
-  const Reader = (Zotero as any).Reader;
-  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
-  if (_splitViewMenuHandler) {
-    try {
-      Reader.unregisterEventListener(
-        "createViewContextMenu",
-        _splitViewMenuHandler,
-      );
-    } catch (e) {
-      safeDebug("[Z-Transplit splitView] menu unregister error: " + e);
-    }
-    _splitViewMenuHandler = null;
-  }
 }
 
 /**
@@ -784,311 +875,191 @@ async function runManagedJavaInstall(): Promise<boolean> {
 }
 
 /**
- * Handler kept at module scope so unregisterOpenDataLoaderMenu() can revoke it
- * by reference via Reader.unregisterEventListener.
- */
-let _openDataLoaderMenuHandler: ((event: any) => void) | null = null;
-
-/**
  * Currently active translation AbortController, or null when no translation
- * is in progress. The "取消正在进行的翻译" context-menu item calls .abort()
- * on this for cooperative cancellation. Deliberately stays in THIS module (the
- * host of the read/write) rather than being shared across files.
+ * is in progress. The「取消正在进行的翻译」submenu entry calls .abort() on this
+ * for cooperative cancellation. Deliberately stays in THIS module (the host of
+ * the read/write) rather than being shared across files.
  */
 let activeTranslationController: AbortController | null = null;
 
 /**
- * Register a "翻译并分屏" (Translate & Split) item in the reader's context
- * menu. This is the DEFAULT translation path (no ORT dependency, no Python —
- * only needs Java + a configured translation engine). Registration is
- * unconditional; no preference gate controls visibility.
+ * 「翻译并分屏打开」 flow — the DEFAULT translation path (no ORT dependency, no
+ * Python — only needs Java + a configured translation engine). Reached from
+ * the reader context-menu submenu; unconditional, no preference gate.
  */
-export function registerOpenDataLoaderMenu(): void {
-  const Reader = (Zotero as any).Reader;
-  if (!Reader || typeof Reader.registerEventListener !== "function") return;
-  const pluginID = addonID();
+async function runTranslateAndSplitFromReader(reader: any): Promise<void> {
+  // Defensive guard: if a translation is already in flight, don't start
+  // another. The user should see "取消正在进行的翻译" above this entry
+  // in the submenu, but if this fires anyway say so — a silently
+  // ignored click reads as "the plugin is broken".
+  if (activeTranslationController) {
+    safeDebug(
+      "[Z-Transplit splitView] translation already in progress, ignoring duplicate request",
+    );
+    try {
+      const busy = new (Zotero as any).ProgressWindow();
+      busy.changeHeadline(getString("app-title"));
+      busy.addDescription(getString("splitview-error-in-flight"));
+      busy.show();
+      busy.startCloseTimer?.(4000);
+    } catch (e) {
+      safeDebug("[Z-Transplit] splitViewFactory: " + e);
+      /* best-effort */
+    }
+    return;
+  }
+  const sourceItemID: number | undefined = getCurrentReaderItemID(reader);
+  if (!sourceItemID) {
+    safeDebug(
+      "[Z-Transplit splitView] cannot resolve source itemID from reader",
+    );
+    alertDialog(
+      getString("splitview-error-dialog-title"),
+      getString("splitview-error-no-item"),
+    );
+    return;
+  }
+  const sourceItem = (Zotero as any).Items.get(sourceItemID);
+  if (!sourceItem) {
+    alertDialog(
+      getString("splitview-error-dialog-title"),
+      getString("splitview-error-no-item"),
+    );
+    return;
+  }
 
+  // Reuse an existing translation if one is already reachable from
+  // this item — parent siblings, or the dc:relation link written at
+  // import (the only path for top-level sources). Avoids redundant
+  // re-translation.
+  const existing = findExistingTranslation(sourceItem);
+  if (existing) {
+    const win = (Zotero as any).getMainWindow?.() || null;
+    try {
+      await openSplitView(win, sourceItem, existing);
+    } catch (e) {
+      // openSplitView 带超时，复用译文路径同样可能抛错——按本文件惯例
+      // debug + 统一对话框提示。
+      safeDebug(
+        "[Z-Transplit splitView] reuse-translation open failed: " + e,
+      );
+      alertDialog(
+        getString("splitview-error-dialog-title"),
+        getString("splitview-error-open", { detail: String(e) }),
+      );
+      return;
+    }
+    try {
+      const p = new (Zotero as any).ProgressWindow({ window: win });
+      p.changeHeadline(getString("app-title"));
+      p.addDescription(
+        getString("splitview-progress-reused", {
+          title: existing.getField?.("title") || String(existing.id),
+        }),
+      );
+      p.show();
+      p.startCloseTimer?.(3000);
+    } catch (e) {
+      safeDebug("[Z-Transplit] splitViewFactory: " + e);
+      /* best-effort */
+    }
+    return;
+  }
+
+  let progress: any = null;
   try {
-    _openDataLoaderMenuHandler = (event: any) => {
-      const { reader, append } = event;
-      if (!append) return;
+    progress = new (Zotero as any).ProgressWindow({
+      window: (Zotero as any).getMainWindow?.() || null,
+    });
+    progress.changeHeadline(getString("odl-progress-translating"));
+    progress.addDescription(getString("odl-progress-preparing"));
+    progress.show();
 
-      // Conditional cancel item — only shown when a translation is in progress.
-      if (activeTranslationController) {
-        append({
-          label: getString("splitview-menu-cancel"),
-          onCommand: () => {
-            activeTranslationController?.abort();
-          },
-        });
+    const { translateAndSplitWithOpenDataLoader } =
+      await import("../translation/opendataloaderSplitAdapter");
+    const controller = createAbortController();
+    activeTranslationController = controller;
+    const result = await translateAndSplitWithOpenDataLoader({
+      sourceItem,
+      onProgress: (msg: string) => {
+        try {
+          progress.addDescription(msg);
+          // show() is a no-op while the window is up, but re-opens it
+          // (and flushes queued descriptions) after the user closed it —
+          // completion and error lines must not be lost silently.
+          progress.show();
+        } catch (e) {
+          safeDebug("[Z-Transplit] splitViewFactory: " + e);
+          /* best-effort */
+        }
+      },
+      openSplitView,
+      signal: controller.signal,
+    });
+
+    try {
+      // Only claim "opened side by side" when a split tab actually
+      // came up — splitTabID is null when openSplitView failed after
+      // the translation was saved (the adapter then reports that
+      // itself in its progress description).
+      if (result.splitTabID) {
+        progress.addDescription(
+          getString("odl-progress-done-split", {
+            title:
+              (Zotero as any).Items.get(result.translatedAttachmentId)
+                ?.getField?.("title") ||
+              String(result.translatedAttachmentId),
+          }),
+        );
       }
-
-      append({
-        label: getString("splitview-menu-translate"),
-        // 同 registerSplitViewMenu：非 internal 菜单禁用 icon/slider（Zotero 10 硬校验）。
-        onCommand: async () => {
-          // Defensive guard: if a translation is already in flight, don't start
-          // another. The user should see "取消正在进行的翻译" above this item
-          // in the context menu, but if this fires anyway say so — a silently
-          // ignored click reads as "the plugin is broken".
-          if (activeTranslationController) {
-            safeDebug(
-              "[Z-Transplit splitView] translation already in progress, ignoring duplicate request",
-            );
-            try {
-              const busy = new (Zotero as any).ProgressWindow();
-              busy.changeHeadline(getString("app-title"));
-              busy.addDescription(getString("splitview-error-in-flight"));
-              busy.show();
-              busy.startCloseTimer?.(4000);
-            } catch (e) {
-              safeDebug("[Z-Transplit] splitViewFactory: " + e);
-              /* best-effort */
-            }
-            return;
-          }
-          const sourceItemID: number | undefined =
-            getCurrentReaderItemID(reader);
-          if (!sourceItemID) {
-            safeDebug(
-              "[Z-Transplit splitView] cannot resolve source itemID from reader",
-            );
-            alertDialog(
-              getString("splitview-error-dialog-title"),
-              getString("splitview-error-no-item"),
-            );
-            return;
-          }
-          const sourceItem = (Zotero as any).Items.get(sourceItemID);
-          if (!sourceItem) {
-            alertDialog(
-              getString("splitview-error-dialog-title"),
-              getString("splitview-error-no-item"),
-            );
-            return;
-          }
-
-          // Reuse an existing translation if one is already reachable from
-          // this item — parent siblings, or the dc:relation link written at
-          // import (the only path for top-level sources). Avoids redundant
-          // re-translation.
-          const existing = findExistingTranslation(sourceItem);
-          if (existing) {
-            const win = (Zotero as any).getMainWindow?.() || null;
-            try {
-              await openSplitView(win, sourceItem, existing);
-            } catch (e) {
-              // openSplitView 带超时，复用译文路径同样可能抛错——按本文件惯例
-              // debug + 统一对话框提示。
-              safeDebug(
-                "[Z-Transplit splitView] reuse-translation open failed: " + e,
-              );
-              alertDialog(
-                getString("splitview-error-dialog-title"),
-                getString("splitview-error-open", { detail: String(e) }),
-              );
-              return;
-            }
-            try {
-              const p = new (Zotero as any).ProgressWindow({ window: win });
-              p.changeHeadline(getString("app-title"));
-              p.addDescription(
-                getString("splitview-progress-reused", {
-                  title: existing.getField?.("title") || String(existing.id),
-                }),
-              );
-              p.show();
-              p.startCloseTimer?.(3000);
-            } catch (e) {
-              safeDebug("[Z-Transplit] splitViewFactory: " + e);
-              /* best-effort */
-            }
-            return;
-          }
-
-          let progress: any = null;
-          try {
-            progress = new (Zotero as any).ProgressWindow({
-              window: (Zotero as any).getMainWindow?.() || null,
-            });
-            progress.changeHeadline(getString("odl-progress-translating"));
-            progress.addDescription(getString("odl-progress-preparing"));
-            progress.show();
-
-            const { translateAndSplitWithOpenDataLoader } =
-              await import("../translation/opendataloaderSplitAdapter");
-            const controller = createAbortController();
-            activeTranslationController = controller;
-            const result = await translateAndSplitWithOpenDataLoader({
-              sourceItem,
-              onProgress: (msg: string) => {
-                try {
-                  progress.addDescription(msg);
-                  // show() is a no-op while the window is up, but re-opens it
-                  // (and flushes queued descriptions) after the user closed it —
-                  // completion and error lines must not be lost silently.
-                  progress.show();
-                } catch (e) {
-                  safeDebug("[Z-Transplit] splitViewFactory: " + e);
-                  /* best-effort */
-                }
-              },
-              openSplitView,
-              signal: controller.signal,
-            });
-
-            try {
-              // Only claim "opened side by side" when a split tab actually
-              // came up — splitTabID is null when openSplitView failed after
-              // the translation was saved (the adapter then reports that
-              // itself in its progress description).
-              if (result.splitTabID) {
-                progress.addDescription(
-                  getString("odl-progress-done-split", {
-                    title:
-                      (Zotero as any).Items.get(result.translatedAttachmentId)
-                        ?.getField?.("title") ||
-                      String(result.translatedAttachmentId),
-                  }),
-                );
-              }
-              progress.startCloseTimer?.(4000);
-            } catch (e) {
-              safeDebug("[Z-Transplit] splitViewFactory: " + e);
-              /* ignore */
-            }
-          } catch (e: any) {
-            zoteroDebug("[Z-Transplit odl] failed: " + e);
-            // User cancellation — not an error, just stop gracefully. Detected
-            // by error NAME: the message is localized, so text equality can't
-            // discriminate.
-            if (e?.name === "ZTransplitCancelled") {
-              try {
-                progress?.addDescription(getString("odl-progress-cancelled"));
-                progress?.startCloseTimer?.(3000);
-              } catch (e) {
-                safeDebug("[Z-Transplit] splitViewFactory: " + e);
-                /* ignore */
-              }
-              return;
-            }
-            const rawMsg = toErrorMessage(e);
-            // Close the in-flight translation progress so it doesn't linger
-            // behind the install dialog.
-            try {
-              progress?.startCloseTimer?.(1000);
-            } catch (e) {
-              safeDebug("[Z-Transplit] splitViewFactory: " + e);
-              /* ignore */
-            }
-            // Special-case missing Java: offer to download a bundled JRE
-            // instead of a dead-end blocking alert. Structured reason first
-            // (isJavaMissingCause) — matching the message text alone misclassifies
-            // the localized preflight shell and JVM crash output.
-            if (isJavaMissingCause(e)) {
-              await handleMissingJava();
-              return;
-            }
-            const friendly = friendlyOdlError(rawMsg);
-            try {
-              progress?.addDescription("✗ " + friendly);
-              progress?.startCloseTimer?.(10000);
-            } catch (e) {
-              safeDebug("[Z-Transplit] splitViewFactory: " + e);
-              /* ignore */
-            }
-            alertDialog(getString("odl-error-dialog-title"), friendly);
-          } finally {
-            activeTranslationController = null;
-          }
-        },
-      });
-    };
-    Reader.registerEventListener(
-      "createViewContextMenu",
-      _openDataLoaderMenuHandler,
-      pluginID,
-    );
-  } catch (e) {
-    zoteroDebug("[Z-Transplit odl] menu registration error: " + e);
-  }
-}
-
-/** Revoke the OpenDataLoader reader context-menu listener (plugin shutdown / disable). Best-effort. */
-export function unregisterOpenDataLoaderMenu(): void {
-  const Reader = (Zotero as any).Reader;
-  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
-  if (_openDataLoaderMenuHandler) {
-    try {
-      Reader.unregisterEventListener(
-        "createViewContextMenu",
-        _openDataLoaderMenuHandler,
-      );
+      progress.startCloseTimer?.(4000);
     } catch (e) {
-      zoteroDebug("[Z-Transplit odl] menu unregister error: " + e);
+      safeDebug("[Z-Transplit] splitViewFactory: " + e);
+      /* ignore */
     }
-    _openDataLoaderMenuHandler = null;
-  }
-}
-
-/**
- * Handler kept at module scope so unregisterBilingualReaderMenu() can revoke it
- * by reference via Reader.unregisterEventListener.
- */
-let _bilingualReaderMenuHandler: ((event: any) => void) | null = null;
-
-/**
- * Register 「上下对照」 and 「仅译文」 items in the reader's blank-area context
- * menu. They reuse the shared bilingual launcher so the sidebar and the
- * right-click path always drive the same overlay.
- */
-export function registerBilingualReaderMenu(): void {
-  const Reader = (Zotero as any).Reader;
-  if (!Reader || typeof Reader.registerEventListener !== "function") return;
-  const pluginID = addonID();
-
-  try {
-    _bilingualReaderMenuHandler = (event: any) => {
-      const { reader, append } = event;
-      if (!append || !reader) return;
-
-      append({
-        label: getString("splitview-menu-interleave"),
-        onCommand: async () => {
-          await launchBilingualFromReader(reader, "interleave");
-        },
-      });
-      append({
-        label: getString("splitview-menu-trans-only"),
-        onCommand: async () => {
-          await launchBilingualFromReader(reader, "transOnly");
-        },
-      });
-    };
-    Reader.registerEventListener(
-      "createViewContextMenu",
-      _bilingualReaderMenuHandler,
-      pluginID,
-    );
-  } catch (e) {
-    zoteroDebug("[Z-Transplit] bilingual reader menu registration error: " + e);
-  }
-}
-
-/** Revoke the bilingual reader context-menu listener. Best-effort. */
-export function unregisterBilingualReaderMenu(): void {
-  const Reader = (Zotero as any).Reader;
-  if (!Reader || typeof Reader.unregisterEventListener !== "function") return;
-  if (_bilingualReaderMenuHandler) {
+  } catch (e: any) {
+    zoteroDebug("[Z-Transplit odl] failed: " + e);
+    // User cancellation — not an error, just stop gracefully. Detected
+    // by error NAME: the message is localized, so text equality can't
+    // discriminate.
+    if (e?.name === "ZTransplitCancelled") {
+      try {
+        progress?.addDescription(getString("odl-progress-cancelled"));
+        progress?.startCloseTimer?.(3000);
+      } catch (e) {
+        safeDebug("[Z-Transplit] splitViewFactory: " + e);
+        /* ignore */
+      }
+      return;
+    }
+    const rawMsg = toErrorMessage(e);
+    // Close the in-flight translation progress so it doesn't linger
+    // behind the install dialog.
     try {
-      Reader.unregisterEventListener(
-        "createViewContextMenu",
-        _bilingualReaderMenuHandler,
-      );
+      progress?.startCloseTimer?.(1000);
     } catch (e) {
-      zoteroDebug("[Z-Transplit] bilingual reader menu unregister error: " + e);
+      safeDebug("[Z-Transplit] splitViewFactory: " + e);
+      /* ignore */
     }
-    _bilingualReaderMenuHandler = null;
+    // Special-case missing Java: offer to download a bundled JRE
+    // instead of a dead-end blocking alert. Structured reason first
+    // (isJavaMissingCause) — matching the message text alone misclassifies
+    // the localized preflight shell and JVM crash output.
+    if (isJavaMissingCause(e)) {
+      await handleMissingJava();
+      return;
+    }
+    const friendly = friendlyOdlError(rawMsg);
+    try {
+      progress?.addDescription("✗ " + friendly);
+      progress?.startCloseTimer?.(10000);
+    } catch (e) {
+      safeDebug("[Z-Transplit] splitViewFactory: " + e);
+      /* ignore */
+    }
+    alertDialog(getString("odl-error-dialog-title"), friendly);
+  } finally {
+    activeTranslationController = null;
   }
 }
 

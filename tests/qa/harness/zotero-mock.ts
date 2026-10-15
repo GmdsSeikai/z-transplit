@@ -265,6 +265,18 @@ export class ZoteroMock {
       if (type === "renderTextSelectionPopup") handler(event);
     }
   }
+
+  /**
+   * Fire an arbitrary registered reader event (e.g. 「createViewContextMenu」)
+   * against every listener registered for that type. The caller builds the
+   * event — reader/append/params — since each event type carries its own
+   * shape; menu handlers receive `append` collectors from the test.
+   */
+  fireReaderEvent(type: string, event: any): void {
+    for (const { type: registered, handler } of [...sharedReaderEventListeners]) {
+      if (registered === type) handler(event);
+    }
+  }
 }
 
 export function createZoteroMock(opts: ZoteroMockOptions = {}): ZoteroMock {

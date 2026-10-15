@@ -28,13 +28,52 @@
  * @param bytes Translated PDF bytes (already merged across pages).
  * @param parentItemID The original attachment's parentItemID (the journal
  *   article etc.), or null/undefined for a standalone source.
- * @param title Display title for the new attachment (e.g. "Translated (zh-CN)").
+ * @param title Display title for the new attachment (e.g.
+ *   "Translated (zh-CN) · paper" — see translatedTitleWithSource).
  * @param sourceItem The source PDF attachment, when known — used to link the
  *   translation back via dc:relation so the dedup lookups also work for
  *   top-level sources.
  * @returns The created Zotero.Item (attachment).
  */
+import { getString } from "../../../utils/locale";
 import { safeDebug } from "../../../utils/logger";
+
+/**
+ * Base name of the source PDF file without extension ("paper" from
+ * ".../paper.pdf"). Prefers the attachment's own filename, falls back to its
+ * file path, and finally to a constant so a name is always produced.
+ */
+export function translatedSourceBaseName(sourceItem: any): string {
+  const raw = String(
+    sourceItem?.attachmentFilename ?? sourceItem?.getFilePath?.() ?? "",
+  );
+  const file = raw.split(/[\\/]/).pop() ?? "";
+  const base = file.replace(/\.pdf$/i, "").trim();
+  return base || "pdf";
+}
+
+/**
+ * Disk file base name for the translated copy: the original name with a
+ * Translated_ prefix, so the two PDFs in the parent's storage area can never
+ * be confused (Zotero's default naming would give them identical names).
+ */
+export function translatedFileBaseName(sourceItem: any): string {
+  return `Translated_${translatedSourceBaseName(sourceItem)}`;
+}
+
+/**
+ * Display title for the translated attachment. MUST keep starting with
+ * `Translated (<lang>) (` — splitViewCleanup's TRANSLATION_TITLE_RE and the
+ * item-tree menu's inline copy anchor on exactly that shape for dedup and
+ * split-reuse. The source base name is appended so the library row names
+ * which paper this translation belongs to.
+ */
+export function translatedTitleWithSource(
+  lang: string,
+  sourceBaseName: string,
+): string {
+  return `Translated (${lang}) · ${sourceBaseName}`;
+}
 
 /** Merge `uri` into the item's dc:relation list (keeps other predicates). */
 function addDcRelation(item: any, uri: string): void {
@@ -68,7 +107,13 @@ export async function importTranslatedBytes(
     await IOUtils.write(tmpFile.path, bytes);
 
     // importFromFile without parentItemID creates a top-level attachment item.
-    const importOptions: Record<string, unknown> = { file: tmpFile };
+    // fileBaseName pins the disk name to Translated_<original>.pdf — without
+    // it Zotero names both PDFs after the parent item (autoRenameFiles), and
+    // the two files in storage become indistinguishable.
+    const importOptions: Record<string, unknown> = {
+      file: tmpFile,
+      fileBaseName: translatedFileBaseName(sourceItem),
+    };
     if (parentItemID != null) importOptions.parentItemID = parentItemID;
     const attachment = await (Zotero as any).Attachments.importFromFile(importOptions);
 
@@ -76,10 +121,14 @@ export async function importTranslatedBytes(
     // and so future re-translations could detect an existing translation.
     // Also link translation ↔ source via dc:relation (both directions, like
     // Zotero's Related pane) — the only way dedup finds translations of
-    // top-level sources, which have no parent item to scan. Best-effort: a
-    // failed link only costs dedup, never the translation itself.
+    // top-level sources, which have no parent item to scan. The「译文」tag is
+    // the at-a-glance library marker (item pane + tags column + tag selector).
+    // All best-effort: a failed mark only costs identification, never the
+    // translation itself.
     try {
       attachment.setField("title", title);
+      const tag = getString("translated-tag");
+      if (tag) attachment.addTag(tag);
       const URI = (Zotero as any).URI;
       const sourceURI = sourceItem ? URI?.getItemURI?.(sourceItem) : null;
       if (sourceURI) {
@@ -91,7 +140,7 @@ export async function importTranslatedBytes(
       if (sourceURI) await sourceItem.saveTx();
     } catch (e) {
       safeDebug("[Z-Transplit] translatedAttachment: " + e);
-      /* best-effort — title/relation are cosmetic */
+      /* best-effort — title/tag/relation are cosmetic */
     }
 
     return attachment;

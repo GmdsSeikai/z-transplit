@@ -58,6 +58,7 @@ pane-translate-card-source-model = 释义来源：模型引擎
 pane-translate-card-source-mt = 释义来源：翻译引擎
 
 ## ─── 词卡标签页（src/ui/wordCardsTab.ts + src/modules/registerWordCardsUI.ts）
+tools-wordcards = 生词本
 wordcards-tab-title = 词卡
 wordcards-toolbar-tooltip = 词卡（查过的单词）
 wordcards-search-placeholder =
@@ -81,7 +82,7 @@ wordcards-no-match = 没有匹配的词卡。
 ## ─── 条目右键菜单（src/modules/registerItemTreeMenu.ts）──────────────────
 itemtree-menu = Z-Transplit
 itemtree-translate-attachment = 翻译全文（生成译文附件）
-itemtree-translate-split = 翻译并分屏对照
+itemtree-translate-split = 分屏翻译
 
 ## ─── 双语对照阅读（src/ui/bilingualControl.ts + src/core/pdf/sdt/）────────
 bilingual-enable = 双语阅读

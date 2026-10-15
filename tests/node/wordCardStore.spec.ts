@@ -17,6 +17,7 @@ import {
   getWordCard,
   listWordCards,
   recentWordCards,
+  recentWordCardsForItem,
   deleteWordCard,
   clearAllWordCards,
 } from "../../src/core/wordcards/wordCardStore";
@@ -113,6 +114,27 @@ describe("wordCardStore listing", () => {
     const all = await listWordCards();
     expect(all.map((r) => r.word)).toEqual(["aaa", "ccc", "bbb"]);
     expect((await recentWordCards(2)).map((r) => r.word)).toEqual(["aaa", "ccc"]);
+  });
+
+  it("recentWordCardsForItem keeps only the cards whose latest lookup came from the item", async () => {
+    await upsertWordCard({ word: "alpha", targetLang: "zh-CN", content: card("alpha", "甲"), sourceItemID: 7 });
+    await upsertWordCard({ word: "beta", targetLang: "zh-CN", content: card("beta", "乙"), sourceItemID: 9 });
+    await upsertWordCard({ word: "gamma", targetLang: "zh-CN", content: card("gamma", "丙"), sourceItemID: 7 });
+
+    const mine = await recentWordCardsForItem(7, 10);
+    expect(mine.map((r) => r.word)).toEqual(["gamma", "alpha"]);
+    expect((await recentWordCardsForItem(9, 10)).map((r) => r.word)).toEqual(["beta"]);
+    expect(await recentWordCardsForItem(1234, 10)).toEqual([]);
+
+    // n caps the strip just like the global variant.
+    expect((await recentWordCardsForItem(7, 1)).map((r) => r.word)).toEqual(["gamma"]);
+  });
+
+  it("a card re-looked-up from another item moves to that item (sourceItemID overwrite)", async () => {
+    await upsertWordCard({ word: "drift", targetLang: "zh-CN", content: card("drift", "漂移"), sourceItemID: 7 });
+    await upsertWordCard({ word: "drift", targetLang: "zh-CN", content: card("drift", "漂移二"), sourceItemID: 9 });
+    expect((await recentWordCardsForItem(7, 10)).map((r) => r.word)).toEqual([]);
+    expect((await recentWordCardsForItem(9, 10)).map((r) => r.word)).toEqual(["drift"]);
   });
 });
 

@@ -3,6 +3,61 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- The word-cards book (「生词本」) is now reachable from the main window's
+  Tools menu: a new「生词本」/ "Word Cards" entry (`tools-wordcards` Fluent
+  key) opens the standalone word-cards tab, which now carries the wordcards
+  glyph in the tab bar (`data.icon` was an empty placeholder before). The
+  translate pane's recent-words strip becomes the per-item view: when the pane
+  is bound to an item it lists only cards whose latest lookup came from that
+  item (new `recentWordCardsForItem` store query); without an item it keeps
+  the global recents. Note the store keeps only the most recent source per
+  card, so a word looked up in several papers surfaces only under the latest
+  one.
+- Translated PDF attachments are now unmistakable: the disk file is named
+  `Translated_<original>.pdf` (via `importFromFile`'s `fileBaseName` —
+  previously Zotero's default naming gave both PDFs the parent item's name),
+  the attachment title carries the source base name
+  (`Translated (zh-CN) · <original name>`, still matching the
+  `^(译文|Translated)\s*\(` recognition regex so dedup and split-reuse are
+  unaffected), and a「译文」/ "Translated" tag (`translated-tag` Fluent key)
+  marks the attachment.
+- Menu entries that reflect a live state now carry Zotero's native checkbox
+  checkmark, computed fresh on every right-click (the menu is rebuilt per
+  open). In the reader menu both split entries checkmark while the current
+  tab is a split comparison (either entry produces the same view — the
+  "no translation" entry also lands the latest translation on the right pane
+  when one exists — so the checkmark means "this tab IS a split comparison"),
+  and exactly one bilingual entry checkmark while the session runs on this
+  item. The library item menu's entries are checkbox-typed too: the bilingual
+  entries checkmark while the session runs on the selected PDF, the split
+  entry while a split tab shows it. Backing queries are new exports:
+  `getActiveBilingualModeForItem` (bilingualLauncher) and
+  `findSplitTabForItem` (splitViewCleanup).
+
+### Changed
+
+- Every reader context-menu entry (translate + split via the OpenDataLoader
+  pipeline, the conditional "Cancel translation in progress", the manual
+  split-screen comparison, and the two bilingual reading entries) now lives in
+  a single「Z-Transplit」submenu instead of five flat items that mixed with
+  other plugins' entries. The submenu is one appended item carrying a `groups`
+  array; verified against Zotero 7.0.15 and 10 (10.0.6 omni.ja) that the host
+  renderer builds a nested menu from `groups` and that its hard validation
+  rejects top-level `icon`/`slider` only, so the submenu is safe on both host
+  versions. A new `splitview-menu-root` Fluent key ("Z-Transplit") was added
+  to both locales; the three per-feature menu registrations were merged into
+  one (`registerReaderContextMenu` / `unregisterReaderContextMenu`).
+- Context-menu labels shortened (both locales, same concept = same name across
+  the reader and library menus): 分屏对照（不翻译）→「分屏阅读」("Split-screen
+  reading"), 翻译并分屏打开 / 翻译并分屏对照 →「分屏翻译」("Split-screen
+  translation"), 上下对照双语阅读 →「上下翻译」("Interlinear translation"),
+  仅译文双语阅读 →「仅译文」("Translation only"). The real-machine probe's
+  label filters were updated to the new wording.
+
 ## [1.9.0] - 2026-10-13
 
 ### Changed

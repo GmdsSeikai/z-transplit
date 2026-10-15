@@ -244,6 +244,41 @@ listener 真的回调 `onScroll`）。`installSync` 的重试逻辑由既有 `sp
   按 PDF 文本层逐页取段（429 字符/页）
 - 分屏对照：真机创建 `isSplitView` Tab，分隔条与左右 reader 就位
 
+## 右键菜单子菜单化＋生词本入口 实机复验记录（Zotero 10.0.6，2026-10-15）
+
+渲染通路先对照两份宿主源码核验：Zotero 7.0.15 与 10 的 chrome reader.js
+`_openContextMenu` 对 `groups`/`checked` 的处理逐字一致；Zotero 10.0.6 本机
+omni.ja（resource/reader/reader.js ← src/index.zotero.js）证实硬校验只拒绝
+顶层项的 `icon`/`slider` 且不递归进 `groups`。单测 11 例钉死 append 载荷契约。
+随后在真机（QA profile，zh-CN）全项通过：
+
+- `menus`：单一「Z-Transplit」子菜单载荷（`ourHandlers: 1`，groups 两段四项，
+  新文案「分屏翻译 / 分屏阅读 / 上下翻译 / 仅译文」，空闲态全部不勾选）；
+- `menus compare`：子菜单内的「分屏阅读」实机触发成功（约 1.4 s，分屏容器
+  与左右 reader 就位，splitPanes 探针确认）；
+- `itemtree`：四个 menuitem 均 `type=checkbox`；分屏打开在该条目上时
+  「分屏翻译」`checked=true`，其余项 `checked=false`；
+- `tools`：「工具」菜单出现「生词本」（`toolsMenu`/`menu_ToolsPopup` 锚点），
+  点击打开词卡标签页且 `data.icon` 为 wordcards-16.svg（标签栏渲染图标）；
+- `pipelineViaMenu`：全文翻译流水线 21 s 完成（ODL jar 自动下载、JVM 正常
+  启动 exit 0、google 免密钥引擎真实译文入缓存），译文附件标题
+  「Translated (zh-CN) · qa-sample」、磁盘文件 `Translated_qa-sample.pdf`、
+  自动加「译文」标签，三项全部符合预期。
+
+实机复验中发现并修复两个缺陷：
+
+1. **工具菜单锚点 id 错误**：`menu-tools`/`menu-tools-popup` 在 Zotero 7.0.15
+   与 10 中都不存在，两版实际均为 `toolsMenu` + `menu_ToolsPopup`（对照两版
+   zoteroPane.xhtml 核实）。已改为候选链解析并回退兜底。
+2. **条目菜单勾选永远不生效**：onShowing 里把 `resolveSourcePdfAttachment`
+   的返回值（本就是第一个附件）又取了一次 `[0]`，得到 undefined，勾选恒为
+   false。单测与结构门禁均覆盖不到此路径（条目菜单无 vitest 覆盖），由真机
+   `itemtree` 探针暴露，已修复。
+
+备注：`verifyPdf` 探针的 `cjkBytesInFile` 是对原始字节做 CJK 码点粗扫描，
+嵌入子集字体的译文 PDF 本就不含裸 CJK 字节（源 PDF 同样为 0），译文的中文
+内容以 `translation-cache` 记录与此前轮次的文本反提取（135 汉字）为准。
+
 ## 本轮新增能力（可复用的真机测试基建）
 
 `scripts/qa/real-machine.mjs`：独立 profile + 独立数据目录启动真机，把驱动探针以

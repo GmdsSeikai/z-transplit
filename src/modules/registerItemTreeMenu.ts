@@ -2,10 +2,13 @@
  * registerItemTreeMenu — library item context-menu entries for the PDF
  * translation flows.
  *
- * Two entry points:
+ * Four entries (all checkbox-typed: a checkmark marks the live state — an
+ * active bilingual session or an open split tab on the selected PDF):
  *   - 「翻译全文（生成译文附件）」— runs the pipeline with outcome "attachment"
  *     (auto-opens the result);
- *   - 「翻译并分屏对照」— the existing split-view flow from the library.
+ *   - 「翻译并分屏对照」— the existing split-view flow from the library;
+ *   - 「上下对照双语阅读」/「仅译文双语阅读」— the shared bilingual launcher
+ *     (same lifecycle as the reader context menu and the sidebar).
  *
  * Host API reality (verified against Zotero 7.0.15 and 10.x source):
  *   - Zotero 10 has Zotero.MenuManager.registerMenu but NOT
@@ -38,8 +41,12 @@ import {
 import {
   findExistingTranslation,
   findTranslationByRelation,
+  findSplitTabForItem,
 } from "../core/pdf/splitview/splitViewCleanup";
-import { startBilingualSessionByItemID } from "../core/pdf/sdt/bilingualLauncher";
+import {
+  getActiveBilingualModeForItem,
+  startBilingualSessionByItemID,
+} from "../core/pdf/sdt/bilingualLauncher";
 
 const MENU_ID = "ztransplit-itemmenu";
 const SEP_ID = "ztransplit-itemmenu-sep";
@@ -81,7 +88,10 @@ function resolveAllSourcePdfAttachments(items: any[]): any[] {
           out.push(att);
         }
       }
-    } catch {
+    } catch (e) {
+      safeDebug(
+        `[Z-Transplit] resolveAllSourcePdfAttachments scan error: ${e}`,
+      );
       /* not an item we understand — keep scanning */
     }
   }
@@ -284,6 +294,12 @@ function injectIntoWindow(win: any): boolean {
       const mi = doc.createXULElement("menuitem");
       mi.id = id;
       mi.setAttribute("label", getString(l10nKey));
+      // Checkbox type + per-showing `checked` writes (see onShowing) give the
+      // entries Zotero's native checkmark while their state is live. XUL
+      // auto-toggles the visual state on click, but the menu closes on click
+      // and the next popupshowing re-asserts the truth, so it self-corrects.
+      mi.setAttribute("type", "checkbox");
+      mi.setAttribute("checked", "false");
       mi.addEventListener("command", handler);
       return mi;
     };
@@ -304,6 +320,28 @@ function injectIntoWindow(win: any): boolean {
         // was observed displaying a native label ("在文献库中显示", found in
         // the live-install test on a real library) — re-set wins the race.
         menu.setAttribute("label", getString("itemtree-menu"));
+
+        // Checkmark state, recomputed on every showing so it can never go
+        // stale: the bilingual entries checkmark only while the single live
+        // session runs on the selected PDF, the split entry while any split
+        // tab shows it. 「翻译全文」 produces an attachment, not a live state —
+        // never checkmarked. resolveSourcePdfAttachment already returns the
+        // FIRST attachment — do not index it again.
+        const source = resolveSourcePdfAttachment(items);
+        const liveMode = getActiveBilingualModeForItem(source?.id);
+        const splitOpen = source
+          ? findSplitTabForItem(source.id) != null
+          : false;
+        translateAttachment.setAttribute("checked", "false");
+        translateSplit.setAttribute("checked", splitOpen ? "true" : "false");
+        interleaveItem.setAttribute(
+          "checked",
+          liveMode === "interleave" ? "true" : "false",
+        );
+        transOnlyItem.setAttribute(
+          "checked",
+          liveMode === "transOnly" ? "true" : "false",
+        );
       } catch (e) {
         safeDebug("[Z-Transplit] itemTreeMenu onShowing: " + e);
       }

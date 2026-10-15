@@ -54,18 +54,16 @@ async function onStartup() {
   }
 
   // The PDF split-view pipeline is reachable ONLY through its reader
-  // context-menu entries (「翻译并分屏」 via the OpenDataLoader pipeline and
-  // 「对比分屏」 for a manual side-by-side), and nothing else in the addon
-  // registers them — so this is the one and only call site. Skipping it leaves
-  // the whole translate→split flow (and its bundle code) unreachable at
+  // context-menu submenu (「Z-Transplit」: translate+split via the OpenDataLoader
+  // pipeline, manual split, and the two bilingual entries), and nothing else in
+  // the addon registers it — so this is the one and only call site. Skipping it
+  // leaves the whole translate→split flow (and its bundle code) unreachable at
   // runtime. Registration is unconditional by design: each menu action
   // preflights its own preconditions (engine readiness / Java) and reports a
   // human-readable error instead of silently doing nothing.
   try {
     const mod = await import("./core/pdf/splitview/splitViewFactory");
-    mod.registerSplitViewMenu();
-    mod.registerOpenDataLoaderMenu();
-    mod.registerBilingualReaderMenu();
+    mod.registerReaderContextMenu();
   } catch (e) {
     safeDebug(
       `[Z-Transplit] ./core/pdf/splitview/splitViewFactory unavailable: ${toErrorMessage(e)}`,
@@ -173,14 +171,12 @@ async function onShutdown() {
       `[Z-Transplit] ./modules/registerTranslateUI unavailable on shutdown: ${toErrorMessage(e)}`,
     );
   }
-  // Mirror the startup registration: revoke both reader context-menu listeners
-  // (「翻译并分屏」/「对比分屏」) so a plugin reload in the same process cannot
-  // stack duplicate menu items.
+  // Mirror the startup registration: revoke the reader context-menu submenu
+  // listener so a plugin reload in the same process cannot stack duplicate
+  // menu items.
   try {
     const mod = await import("./core/pdf/splitview/splitViewFactory");
-    mod.unregisterSplitViewMenu();
-    mod.unregisterOpenDataLoaderMenu();
-    mod.unregisterBilingualReaderMenu();
+    mod.unregisterReaderContextMenu();
   } catch (e) {
     safeDebug(
       `[Z-Transplit] ./core/pdf/splitview/splitViewFactory unavailable on shutdown: ${toErrorMessage(e)}`,

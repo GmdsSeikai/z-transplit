@@ -334,6 +334,22 @@ export async function recentWordCards(n: number): Promise<WordCardRecord[]> {
   return n > 0 ? all.slice(0, n) : [];
 }
 
+/**
+ * The n most recently updated cards whose latest lookup came from this item
+ * (pane chip strip, per-item view). The store keeps only the most recent
+ * source per card (sourceItemID is overwritten on every upsert), so a word
+ * looked up in several papers surfaces only under the latest one — accepted
+ * simplicity for the per-item filter. Never throws.
+ */
+export async function recentWordCardsForItem(
+  itemID: number,
+  n: number,
+): Promise<WordCardRecord[]> {
+  const all = await listWordCards();
+  const mine = all.filter((record) => record.sourceItemID === itemID);
+  return n > 0 ? mine.slice(0, n) : [];
+}
+
 /** Delete one card by word. Resolves true when a card was removed. Never throws. */
 export async function deleteWordCard(word: string): Promise<boolean> {
   try {

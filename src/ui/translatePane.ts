@@ -75,6 +75,7 @@ import {
 import type { DictionaryCardContent } from "../core/translation/types";
 import {
   recentWordCards,
+  recentWordCardsForItem,
   upsertWordCard,
 } from "../core/wordcards/wordCardStore";
 import type { WordCardRecord } from "../core/wordcards/wordCardStore";
@@ -1166,10 +1167,18 @@ export function mountTranslatePane(
 
   // ── recent-words chip strip ────────────────────────────────────────────────
 
-  /** Reload the strip's data from the store, then re-render it. */
+  /**
+   * Reload the strip's data from the store, then re-render it. Per-item view:
+   * when the pane is bound to an item, only cards whose latest lookup came
+   * from THIS item show (the item's own word book); without an item the strip
+   * falls back to the global recents.
+   */
   async function refreshChips(): Promise<void> {
     if (destroyed) return;
-    currentChips = await recentWordCards(CHIP_COUNT);
+    currentChips =
+      itemID != null
+        ? await recentWordCardsForItem(itemID, CHIP_COUNT)
+        : await recentWordCards(CHIP_COUNT);
     renderChips();
   }
 

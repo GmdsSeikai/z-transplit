@@ -56,10 +56,11 @@ readiness-reason-ai-prompt = The AI engine's prompt template is invalid — fix 
 readiness-reason-unknown = Unknown reason
 
 ## Split view menus (src/core/pdf/splitview/splitViewFactory.ts)
-splitview-menu-compare = Split-screen comparison (no translation)
-splitview-menu-translate = Translate and open side by side
-splitview-menu-interleave = Bilingual overlay (original above, translation below)
-splitview-menu-trans-only = Translation-only overlay
+splitview-menu-root = Z-Transplit
+splitview-menu-compare = Split-screen reading
+splitview-menu-translate = Split-screen translation
+splitview-menu-interleave = Interlinear translation
+splitview-menu-trans-only = Translation only
 splitview-menu-cancel = Cancel translation in progress
 
 ## OpenDataLoader pipeline errors (src/core/pdf/splitview/splitViewFactory.ts)
@@ -98,11 +99,14 @@ itemtree-progress-attachment = Z-Transplit: Translating full text…
 itemtree-dedup-open = An existing translation was found — opening it.
 itemtree-split-reuse = An existing translation was found — opening side by side.
 itemtree-open-failed = Could not open the translated attachment automatically. Open it manually from the item.
-itemtree-interleave = Bilingual overlay (original above, translation below)
-itemtree-trans-only = Translation-only overlay
+itemtree-interleave = Interlinear translation
+itemtree-trans-only = Translation only
 itemtree-launch-progress = Z-Transplit: preparing bilingual overlay…
 itemtree-launch-done = Bilingual overlay ready
 itemtree-launch-no-reader = Could not resolve an open reader for this item. Reopen the PDF and try again.
+
+## Translated attachment (src/core/pdf/translation/translatedAttachment.ts)
+translated-tag = Translated
 
 ## Java runtime install flow (splitViewFactory / JavaRuntimeManager)
 java-dialog-title = Java required

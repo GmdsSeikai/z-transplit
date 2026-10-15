@@ -72,6 +72,24 @@ export function onSessionChange(listener: () => void): () => void {
   return () => listeners.delete(listener);
 }
 
+/**
+ * The live session's mode when it runs on this exact item, else null. Menus
+ * read this at build time to render their checkmark state. A session started
+ * without a known item stores -1 as a sentinel — it matches nothing, so a
+ * session whose origin is unknown never checkmarks a menu entry.
+ */
+export function getActiveBilingualModeForItem(
+  itemID: number | undefined | null,
+): BilingualMode | null {
+  if (itemID === undefined || itemID === null || itemID < 0) return null;
+  if (!active || active.itemID !== itemID) return null;
+  try {
+    return active.handle.getMode();
+  } catch {
+    return null;
+  }
+}
+
 export async function startBilingualSession(options: {
   reader: any;
   itemID?: number;

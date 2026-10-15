@@ -342,8 +342,11 @@ export function openWordCardsTab(win: any): void {
         // with no undefined guard — data must be a defined object or add()
         // throws mid-flight (observed on 10.0.3: "can't access property
         // \"icon\", tab.data is undefined", leaving a container-less tab).
-        // Empty icon = a title-only entry in the tab bar.
-        data: { icon: "" },
+        // The wordcards glyph renders as the tab-bar icon; an empty string
+        // would mean a title-only entry.
+        data: {
+          icon: "chrome://ztransplit/content/icons/wordcards-16.svg",
+        },
         title: getString("wordcards-tab-title"),
         select: true,
         onClose: () => destroyTab(),

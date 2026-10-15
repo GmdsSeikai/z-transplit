@@ -1103,7 +1103,22 @@ PROBE_CMDS.menus = async function (action) {
       appended.push({ label: "LISTENER-ERROR", _err: String(e) });
     }
   }
-  const labels = appended.map((a) => a.label);
+
+  // Since the Z-Transplit submenu unification the payload is ONE top-level
+  // item whose `groups` array nests the entries (host renders it as a
+  // submenu). Record the tree as-is plus a flat view for the label filters.
+  const shape = (item) => ({
+    label: item.label,
+    checked: item.checked === true,
+    groups: Array.isArray(item.groups)
+      ? item.groups.map((group) => group.map(shape))
+      : undefined,
+  });
+  const flat = (item) =>
+    Array.isArray(item.groups)
+      ? item.groups.flat().flatMap(flat)
+      : [item.label];
+  const labels = appended.flatMap(flat);
 
   if (!action || action === "labels") {
     return {
@@ -1111,7 +1126,8 @@ PROBE_CMDS.menus = async function (action) {
       ourHandlers: cv.filter((x) =>
         String(x.pluginID || "").includes("ztransplit"),
       ).length,
-      transplitEntries: labels.filter((l) => /side by side|comparison|Split-screen|Translate/i.test(l || "")),
+      appendedShape: appended.map(shape),
+      transplitEntries: labels.filter((l) => /split-screen|translate|双语|分屏|翻译|译文|取消/i.test(l || "")),
       all: labels,
       labels,
     };
@@ -1119,11 +1135,15 @@ PROBE_CMDS.menus = async function (action) {
 
   const re =
     action === "split"
-      ? /side by side|分屏打开/i
+      ? /split-screen translation|分屏翻译/i
       : action === "compare"
-        ? /comparison|分屏对照/i
+        ? /split-screen reading|分屏阅读/i
         : null;
-  const entry = re ? appended.find((a) => a.label && re.test(a.label)) : null;
+  const entry = re
+    ? appended
+        .flatMap((a) => (Array.isArray(a.groups) ? a.groups.flat() : [a]))
+        .find((a) => a.label && re.test(a.label))
+    : null;
   if (!entry) return { labels, error: "no entry matching " + action };
 
   const t0 = Date.now();
@@ -1150,10 +1170,12 @@ PROBE_CMDS.itemtree = async function (action) {
   popup.dispatchEvent(new win.Event("popupshowing"));
   const menu = doc.getElementById("ztransplit-itemmenu");
   if (!menu) return { error: "ztransplit-itemmenu missing" };
-  const items = Array.from(menu.querySelectorAll("menupopup > menuitem"), (m) => [
-    m.id,
-    m.getAttribute("label"),
-  ]);
+  const items = Array.from(menu.querySelectorAll("menupopup > menuitem"), (m) => ({
+    id: m.id,
+    label: m.getAttribute("label"),
+    type: m.getAttribute("type"),
+    checked: m.getAttribute("checked"),
+  }));
   if (!action || action === "labels") {
     return {
       selection: sel.map((i) => [i.id, i.getField?.("title")]),
@@ -1170,6 +1192,46 @@ PROBE_CMDS.itemtree = async function (action) {
   } catch (e) {
     return { invoked: action, error: String(e), name: e?.name };
   }
+};
+
+/** Check the Tools-menu entry that opens the word-cards tab. */
+PROBE_CMDS.tools = async function (arg) {
+  const { win, Zotero_Tabs } = probeWin();
+  const doc = win.document;
+  const popup =
+    doc.getElementById("menu_ToolsPopup") ||
+    doc.getElementById("menu-tools-popup") ||
+    doc.getElementById("toolsMenu")?.querySelector("menupopup") ||
+    doc.getElementById("menu-tools")?.querySelector("menupopup");
+  if (!popup) return { error: "tools menu not found (menu_ToolsPopup)" };
+  const item = doc.getElementById("ztransplit-tools-wordcards");
+  const base = {
+    present: !!item,
+    label: item?.getAttribute("label") ?? null,
+    popupEntries: Array.from(popup.children).map(
+      (n) => n.getAttribute?.("label") || n.tagName,
+    ),
+  };
+  if (arg !== "open" || !item) return base;
+
+  // Click the real menu item, then report the opened tab (its data.icon is
+  // what the tab bar renders).
+  item.doCommand();
+  await Zotero.Promise.delay(2500);
+  let tab = null;
+  try {
+    tab = Zotero_Tabs._getTab?.("ztransplit-wordcards")?.tab ?? null;
+  } catch (e) {
+    base.tabProbeError = String(e);
+  }
+  base.tabOpen = !!tab;
+  base.tabIcon = tab?.data?.icon ?? null;
+  try {
+    if (tab) Zotero_Tabs.close("ztransplit-wordcards");
+  } catch {
+    /* best-effort */
+  }
+  return base;
 };
 
 /** Open the real settings window, report the pane's rendered DOM. */
@@ -1549,6 +1611,8 @@ PROBE_CMDS.attachments = async function () {
           title: it.getField("title"),
           parentID: it.parentItemID,
           size: f?.fileSize ?? null,
+          path: f?.path ?? null,
+          tags: (it.getTags?.() || []).map((t) => t.tag),
         });
       }
     }

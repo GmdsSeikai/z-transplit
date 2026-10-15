@@ -58,7 +58,11 @@ import {
 } from "./translateParagraphs";
 import { renderLayoutPreserving, renderOverlayTranslated } from "./LayoutPreservingRenderer";
 import { mergePageBytes } from "./pdfMerge";
-import { importTranslatedBytes } from "./translatedAttachment";
+import {
+  importTranslatedBytes,
+  translatedSourceBaseName,
+  translatedTitleWithSource,
+} from "./translatedAttachment";
 import {
   buildRemovalRects,
   serializeRemovalRects,
@@ -403,8 +407,12 @@ export async function translateAndSplitWithOpenDataLoader(
     "zh-CN";
   // One title, three consumers: the overlay PDF's metadata, the white-page
   // merged PDF's metadata, and the Zotero attachment title. splitViewCleanup's
-  // recognition regex must keep matching this convention.
-  const translatedTitle = `Translated (${targetLanguage})`;
+  // recognition regex must keep matching this convention — the Translated (<lang>)
+  // (<) prefix is load-bearing; the source base name suffix names the paper.
+  const translatedTitle = translatedTitleWithSource(
+    targetLanguage,
+    translatedSourceBaseName(sourceItem),
+  );
   const cjkFontBytes = isCjkTarget(targetLanguage)
     ? await resolveCjkFont(targetLanguage)
     : null;
