@@ -3,6 +3,24 @@
 All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- Word cards now work for any target language, not just Chinese/English: the
+  translate pane's default lookup language follows the「目标语言」preference
+  (then Zotero's UI locale, then zh-CN) — the same chain the bilingual control,
+  the split view and the PDF pipeline already used, so a French/Japanese/Russian
+  UI user gets card senses and example translations in their own language
+  (model-engine cards; MT简卡 when no AI endpoint is configured). Word read-aloud
+  maps the word's own script to a matching voice (kana→ja, hangul→ko, Han→zh,
+  Cyrillic→ru, Greek→el, Arabic→ar, Devanagari→hi, Thai→th, Hebrew→he, Latin→en
+  fallback) instead of the previous binary Chinese/English choice. The language
+  name table feeding the dictionary prompt grew from 9 to ~80 locales with a
+  primary-subtag fallback ("pt-BR" → Portuguese), and the all-layers-failed
+  error no longer names Youdao, which never participates for non-Chinese
+  targets.
+
 ## [1.10.0] - 2026-10-15
 
 ### Added

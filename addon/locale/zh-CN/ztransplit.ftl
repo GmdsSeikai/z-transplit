@@ -177,5 +177,5 @@ odl-progress-shot-failed = ，{ $count } 段失败
 render-error-rotated-page = 暂不支持旋转页面（/Rotate { $angle }°）。请先将 PDF 转正再翻译。
 
 ## 词典卡片查询链（src/core/translation/dictionaryCard.ts）
-dictionary-error-all-failed = 词典查询失败：有道词典与可用的翻译引擎都没有返回结果（{ $error }）。
+dictionary-error-all-failed = 词典查询失败：词典与可用的翻译引擎都没有返回结果（{ $error }）。
 dictionary-error-unavailable = 词典查询失败：{ $error }

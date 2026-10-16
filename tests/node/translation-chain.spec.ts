@@ -105,7 +105,8 @@ describe("createTranslator / custom 引擎", () => {
     expect(body.model).toBe("my-model");
     expect(body.messages[0].role).toBe("system");
     expect(body.messages[1].role).toBe("user");
-    expect(body.messages[0].content).toContain("from en to Simplified Chinese");
+    // getLanguageName("en") 现映射为 English（此前未映射时透传 "en"）
+    expect(body.messages[0].content).toContain("from English to Simplified Chinese");
     expect(body.messages[0].content).toContain("{v0}");
   });
 

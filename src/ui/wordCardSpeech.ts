@@ -35,14 +35,35 @@ import type { DictionaryCardContent } from "../core/translation/types";
 
 export type SpeechKind = "word" | "examples";
 
-/** CJK characters anywhere in the word → it reads with a Chinese voice. */
+/** CJK ideographs anywhere in the word → it reads with a Chinese voice. */
 export function isChineseWord(word: string): boolean {
   return /[\u3400-\u9fff\uf900-\ufaff]/.test(word || "");
 }
 
-/** BCP-47 language prefix for the word's own script (voice selection). */
+/**
+ * BCP-47 language prefix for the word's OWN script (voice selection), by
+ * Unicode block: kana → ja, hangul → ko, Han → zh, Cyrillic → ru, Greek → el,
+ * Arabic → ar, Devanagari → hi, Thai → th, Hebrew → he. Latin script cannot
+ * be attributed to one language from characters alone, so it falls back to
+ * "en" — same for any unmatched script.
+ */
 export function speechLangFor(word: string): string {
-  return isChineseWord(word) ? "zh" : "en";
+  const w = word || "";
+  const scripts: Array<[RegExp, string]> = [
+    [/[\u3040-\u30ff]/, "ja"], // kana (checked before Han: kana + Han → ja)
+    [/[\uac00-\ud7af\u1100-\u11ff]/, "ko"], // hangul
+    [/[\u3400-\u9fff\uf900-\ufaff]/, "zh"], // Han ideographs
+    [/[\u0400-\u04ff]/, "ru"], // Cyrillic
+    [/[\u0370-\u03ff]/, "el"], // Greek
+    [/[\u0600-\u06ff\u0750-\u077f]/, "ar"], // Arabic
+    [/[\u0900-\u097f]/, "hi"], // Devanagari
+    [/[\u0e00-\u0e7f]/, "th"], // Thai
+    [/[\u0590-\u05ff]/, "he"], // Hebrew
+  ];
+  for (const [re, lang] of scripts) {
+    if (re.test(w)) return lang;
+  }
+  return "en";
 }
 
 /**

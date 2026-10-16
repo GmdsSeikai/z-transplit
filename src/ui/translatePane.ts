@@ -1490,8 +1490,19 @@ export function mountTranslatePane(
   return handle;
 }
 
-/** Default target language: Zotero's UI locale (leadero: Zotero.locale). */
+/**
+ * Default target language: the「目标语言」preference when set, else Zotero's UI
+ * locale, else zh-CN — the same chain the bilingual control, the split view
+ * and the PDF pipeline use. (This used to skip the preference, which made
+ * lookups ignore the user's chosen target language unless typed per pane.)
+ */
 function defaultTargetLang(): string {
+  try {
+    const pref = String(getPref("translate.targetLanguage") ?? "").trim();
+    if (pref) return pref;
+  } catch (e) {
+    safeDebug("[Z-Transplit] translatePane: targetLanguage pref unavailable: " + e);
+  }
   try {
     const locale =
       (typeof Zotero === "undefined" ? undefined : (Zotero as any)?.locale) ??

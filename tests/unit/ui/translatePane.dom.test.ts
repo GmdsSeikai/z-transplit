@@ -275,6 +275,19 @@ describe("B16 阅读器翻译面板：输入交互", () => {
     expect(ctx.fm.calls.length).toBe(0);
   });
 
+  it("目标语言默认链：偏好 translate.targetLanguage 优先于 Zotero 界面语言", () => {
+    ctx = setup({ ...ENGINE_PREFS, "translate.targetLanguage": "fr-FR" }, ["hello"]);
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    // mock 的界面语言是 zh-CN——偏好非空时必须胜出（与双语/分屏/全文翻译同链）
+    expect(langInput(ctx).value).toBe("fr-FR");
+  });
+
+  it("目标语言默认链：无偏好时回落 Zotero 界面语言", () => {
+    ctx = setup(ENGINE_PREFS, ["hello"]);
+    mountTranslatePane({ doc: ctx.doc, body: ctx.body });
+    expect(langInput(ctx).value).toBe("zh-CN");
+  });
+
   it("「刷新选区」重新读取阅读器选区", async () => {
     ctx = setup(ENGINE_PREFS, ["旧文本"]);
     routeOK(ctx.fm);

@@ -21,10 +21,21 @@ function card(overrides: Partial<DictionaryCardContent>): DictionaryCardContent 
 }
 
 describe("speechLangFor", () => {
-  it("maps CJK words to zh and everything else to en", () => {
+  it("maps CJK words to zh and Latin words to en", () => {
     expect(speechLangFor("大学")).toBe("zh");
     expect(speechLangFor("resonance")).toBe("en");
     expect(speechLangFor("")).toBe("en");
+  });
+
+  it("maps scripts to their own voices (internationalized cards)", () => {
+    expect(speechLangFor("キャッシュ")).toBe("ja"); // kana beats Han → ja
+    expect(speechLangFor("한국어")).toBe("ko"); // hangul
+    expect(speechLangFor("словарь")).toBe("ru"); // Cyrillic
+    expect(speechLangFor("λεξικό")).toBe("el"); // Greek
+    expect(speechLangFor("قاموس")).toBe("ar"); // Arabic
+    expect(speechLangFor("शब्दकोश")).toBe("hi"); // Devanagari
+    expect(speechLangFor("พจนานุกรม")).toBe("th"); // Thai
+    expect(speechLangFor("מילון")).toBe("he"); // Hebrew
   });
 });
 

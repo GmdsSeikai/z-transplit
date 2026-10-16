@@ -183,5 +183,5 @@ odl-progress-shot-failed = , { $count } failed
 render-error-rotated-page = Rotated pages are not supported yet (/Rotate { $angle }°). Straighten the PDF before translating.
 
 ## Dictionary card lookup chain (src/core/translation/dictionaryCard.ts)
-dictionary-error-all-failed = Dictionary lookup failed: neither Youdao nor the configured translation engines returned a result ({ $error }).
+dictionary-error-all-failed = Dictionary lookup failed: neither the dictionary nor the configured translation engines returned a result ({ $error }).
 dictionary-error-unavailable = Dictionary lookup failed: { $error }
